@@ -19,7 +19,16 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 
 BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
-BINANCE_WEB_URL = "https://p2p.binance.com/ru/trade/buy/USDT?fiat=UAH"
+PAYMENT_METHODS = {
+    "Monobank": "Monobank",
+    "PrivatBank": "PrivatBank",
+    "PUMBBank": "ПУМБ",
+    "ABank": "А-Банк",
+    "Oschadbank": "Ощадбанк",
+    "RaiffeisenBankAval": "Raiffeisen",
+    "izibank": "izibank",
+    "Sportbank": "Sportbank",
+}
 
 
 @dataclass
@@ -60,6 +69,7 @@ class UserStore:
             "target": str(self.default_target),
             "enabled": True,
             "awaiting_price": False,
+            "payment_methods": [],
             "last_alert_adv_no": None,
         }
 
@@ -89,14 +99,15 @@ class BinanceP2P:
         self.session = session
         self.config = config
 
-    async def best_offer(self) -> dict[str, Any] | None:
+    async def best_offer(self, pay_types: list[str] | None = None) -> dict[str, Any] | None:
+        pay_types = pay_types or []
         payload = {
             "fiat": self.config.fiat,
             "page": 1,
             "rows": 10,
             "tradeType": self.config.trade_type,
             "asset": self.config.asset,
-            "payTypes": [],
+            "payTypes": pay_types,
             "publisherType": None,
         }
         headers = {
@@ -125,7 +136,12 @@ class BinanceP2P:
             "merchant": advertiser.get("nickName") or "Binance P2P",
             "orders": advertiser.get("monthOrderCount"),
             "finish_rate": advertiser.get("monthFinishRate"),
-            "link": BINANCE_WEB_URL,
+            "payment_methods": [
+                method.get("identifier") or method.get("payType")
+                for method in adv.get("tradeMethods", [])
+                if method.get("identifier") or method.get("payType")
+            ],
+            "link": binance_web_url(self.config, pay_types),
         }
 
 
@@ -156,6 +172,29 @@ def parse_price(value: str) -> Decimal:
     return price.quantize(Decimal("0.01"))
 
 
+def binance_web_url(config: Config, pay_types: list[str] | None = None) -> str:
+    base = (
+        f"https://p2p.binance.com/ru/trade/"
+        f"{config.trade_type.lower()}/{config.asset}?fiat={config.fiat}"
+    )
+    if not pay_types:
+        return base
+    return f"{base}&payment={','.join(pay_types)}"
+
+
+def user_payment_methods(user: dict[str, Any]) -> list[str]:
+    methods = user.get("payment_methods")
+    if not isinstance(methods, list):
+        return []
+    return [method for method in methods if method in PAYMENT_METHODS]
+
+
+def payment_title(methods: list[str]) -> str:
+    if not methods:
+        return "все банки"
+    return ", ".join(PAYMENT_METHODS[method] for method in methods)
+
+
 def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
     enabled_text = "Пауза" if user.get("enabled", True) else "Включить"
     return InlineKeyboardMarkup(
@@ -166,6 +205,9 @@ def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text="Изменить цену", callback_data="change_price"),
+                InlineKeyboardButton(text="Банк", callback_data="payments"),
+            ],
+            [
                 InlineKeyboardButton(text=enabled_text, callback_data="toggle"),
             ],
         ]
@@ -186,6 +228,19 @@ def presets_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def payments_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
+    rows = [[InlineKeyboardButton(text="✅ Все банки" if not selected else "Все банки", callback_data="pay:all")]]
+    methods = list(PAYMENT_METHODS.items())
+    for index in range(0, len(methods), 2):
+        row = []
+        for code, title in methods[index : index + 2]:
+            prefix = "✅ " if code in selected else ""
+            row.append(InlineKeyboardButton(text=f"{prefix}{title}", callback_data=f"pay:toggle:{code}"))
+        rows.append(row)
+    rows.append([InlineKeyboardButton(text="Готово", callback_data="settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def offer_text(offer: dict[str, Any], target: Decimal | None = None) -> str:
     target_line = f"\nТвоя цель: <b>{target} {offer['fiat']}</b>" if target is not None else ""
     orders = offer.get("orders") or "-"
@@ -197,6 +252,12 @@ def offer_text(offer: dict[str, Any], target: Decimal | None = None) -> str:
             finish_rate = "-"
     else:
         finish_rate = "-"
+    methods = [
+        PAYMENT_METHODS.get(method, method)
+        for method in offer.get("payment_methods", [])
+        if method
+    ]
+    methods_line = ", ".join(methods) if methods else "-"
 
     return (
         f"🟢 <b>{offer['asset']}/{offer['fiat']}: {offer['price']} {offer['fiat']}</b>"
@@ -204,6 +265,7 @@ def offer_text(offer: dict[str, Any], target: Decimal | None = None) -> str:
         f"Продавец: <b>{html.escape(str(offer['merchant']))}</b>\n"
         f"Лимиты: {offer.get('min_amount') or '-'} - {offer.get('max_amount') or '-'} {offer['fiat']}\n"
         f"Доступно: {offer.get('available') or '-'} {offer['asset']}\n"
+        f"Оплата: {html.escape(methods_line)}\n"
         f"Сделок за месяц: {orders}, завершение: {finish_rate}\n\n"
         f"<a href=\"{offer['link']}\">Открыть объявление на Binance P2P</a>\n"
         f"ID объявления: <code>{offer['adv_no']}</code>"
@@ -214,10 +276,16 @@ def alert_text(offer: dict[str, Any], target: Decimal) -> str:
     return "🔥 <b>Цена дошла до цели</b>\n\n" + offer_text(offer, target)
 
 
-async def send_price(bot: Bot, chat_id: int, p2p: BinanceP2P, target: Decimal | None = None) -> None:
-    offer = await p2p.best_offer()
+async def send_price(
+    bot: Bot,
+    chat_id: int,
+    p2p: BinanceP2P,
+    target: Decimal | None = None,
+    pay_types: list[str] | None = None,
+) -> None:
+    offer = await p2p.best_offer(pay_types)
     if offer is None:
-        await bot.send_message(chat_id, "Сейчас Binance не вернул объявления. Попробуй чуть позже.")
+        await bot.send_message(chat_id, "Сейчас Binance не вернул объявления под этот фильтр. Попробуй другой банк или чуть позже.")
         return
     await bot.send_message(
         chat_id,
@@ -232,13 +300,18 @@ async def send_price(bot: Bot, chat_id: int, p2p: BinanceP2P, target: Decimal | 
 async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: int) -> None:
     while True:
         try:
-            offer = await p2p.best_offer()
-            if offer is not None:
-                users = await store.all_users()
-                for chat_id, user in users.items():
-                    if not user.get("enabled", True):
-                        continue
-                    target = parse_price(str(user.get("target", "44.9")))
+            users = await store.all_users()
+            offers_by_filter: dict[tuple[str, ...], dict[str, Any] | None] = {}
+            for chat_id, user in users.items():
+                if not user.get("enabled", True):
+                    continue
+                pay_types = user_payment_methods(user)
+                filter_key = tuple(pay_types)
+                if filter_key not in offers_by_filter:
+                    offers_by_filter[filter_key] = await p2p.best_offer(pay_types)
+                offer = offers_by_filter[filter_key]
+                if offer is not None:
+                    target = parse_price(str(user.get("target", p2p.config.default_target_price)))
                     adv_no = offer["adv_no"]
                     price = offer["price"]
                     if price <= target and user.get("last_alert_adv_no") != adv_no:
@@ -278,6 +351,7 @@ async def main() -> None:
             await message.answer(
                 "Я слежу за зелёным стаканом Binance P2P USDT/UAH.\n"
                 f"По умолчанию цель: <b>{user['target']} UAH</b>. "
+                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>.\n"
                 "Как только цена будет такой или ниже, пришлю объявление.",
                 reply_markup=main_keyboard(user),
             )
@@ -287,7 +361,9 @@ async def main() -> None:
             user = await store.ensure_user(message.chat.id)
             status = "включены" if user.get("enabled", True) else "на паузе"
             await message.answer(
-                f"Цель: <b>{user['target']} UAH</b>\nОповещения: <b>{status}</b>",
+                f"Цель: <b>{user['target']} UAH</b>\n"
+                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>\n"
+                f"Оповещения: <b>{status}</b>",
                 reply_markup=main_keyboard(user),
             )
 
@@ -296,7 +372,9 @@ async def main() -> None:
             user = await store.ensure_user(callback.message.chat.id)
             status = "включены" if user.get("enabled", True) else "на паузе"
             await callback.message.edit_text(
-                f"Цель: <b>{user['target']} UAH</b>\nОповещения: <b>{status}</b>",
+                f"Цель: <b>{user['target']} UAH</b>\n"
+                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>\n"
+                f"Оповещения: <b>{status}</b>",
                 reply_markup=main_keyboard(user),
             )
             await callback.answer()
@@ -305,7 +383,13 @@ async def main() -> None:
         async def price_now(callback: CallbackQuery) -> None:
             user = await store.ensure_user(callback.message.chat.id)
             await callback.answer("Проверяю Binance...")
-            await send_price(bot, callback.message.chat.id, p2p, parse_price(str(user["target"])))
+            await send_price(
+                bot,
+                callback.message.chat.id,
+                p2p,
+                parse_price(str(user["target"])),
+                user_payment_methods(user),
+            )
 
         @router.callback_query(F.data == "toggle")
         async def toggle(callback: CallbackQuery) -> None:
@@ -313,8 +397,62 @@ async def main() -> None:
             updated = await store.update_user(callback.message.chat.id, enabled=not user.get("enabled", True))
             status = "включены" if updated.get("enabled", True) else "на паузе"
             await callback.message.edit_text(
-                f"Цель: <b>{updated['target']} UAH</b>\nОповещения: <b>{status}</b>",
+                f"Цель: <b>{updated['target']} UAH</b>\n"
+                f"Банк: <b>{payment_title(user_payment_methods(updated))}</b>\n"
+                f"Оповещения: <b>{status}</b>",
                 reply_markup=main_keyboard(updated),
+            )
+            await callback.answer()
+
+        @router.callback_query(F.data == "payments")
+        async def payments(callback: CallbackQuery) -> None:
+            user = await store.ensure_user(callback.message.chat.id)
+            selected = user_payment_methods(user)
+            await callback.message.edit_text(
+                f"Фильтр оплаты: <b>{payment_title(selected)}</b>\n\n"
+                "Можно выбрать один или несколько банков.",
+                reply_markup=payments_keyboard(selected),
+            )
+            await callback.answer()
+
+        @router.callback_query(F.data == "pay:all")
+        async def pay_all(callback: CallbackQuery) -> None:
+            user = await store.update_user(
+                callback.message.chat.id,
+                payment_methods=[],
+                last_alert_adv_no=None,
+            )
+            await callback.message.edit_text(
+                f"Фильтр оплаты: <b>{payment_title(user_payment_methods(user))}</b>\n\n"
+                "Можно выбрать один или несколько банков.",
+                reply_markup=payments_keyboard(user_payment_methods(user)),
+            )
+            await callback.answer("Выбраны все банки")
+
+        @router.callback_query(F.data.startswith("pay:toggle:"))
+        async def pay_toggle(callback: CallbackQuery) -> None:
+            method = callback.data.split(":", 2)[2]
+            if method not in PAYMENT_METHODS:
+                await callback.answer("Неизвестный способ оплаты", show_alert=True)
+                return
+
+            user = await store.ensure_user(callback.message.chat.id)
+            selected = user_payment_methods(user)
+            if method in selected:
+                selected.remove(method)
+            else:
+                selected.append(method)
+
+            updated = await store.update_user(
+                callback.message.chat.id,
+                payment_methods=selected,
+                last_alert_adv_no=None,
+            )
+            selected = user_payment_methods(updated)
+            await callback.message.edit_text(
+                f"Фильтр оплаты: <b>{payment_title(selected)}</b>\n\n"
+                "Можно выбрать один или несколько банков.",
+                reply_markup=payments_keyboard(selected),
             )
             await callback.answer()
 
