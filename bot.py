@@ -15,7 +15,7 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
 
 
 BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
@@ -29,6 +29,12 @@ PAYMENT_METHODS = {
     "izibank": "izibank",
     "Sportbank": "Sportbank",
 }
+BTN_PRICE_NOW = "Цена сейчас"
+BTN_SETTINGS = "Моя цель"
+BTN_CHANGE_PRICE = "Изменить цену"
+BTN_PAYMENTS = "Банк"
+BTN_PAUSE = "Пауза"
+BTN_ENABLE = "Включить"
 
 
 @dataclass
@@ -196,21 +202,37 @@ def payment_title(methods: list[str]) -> str:
 
 
 def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
-    enabled_text = "Пауза" if user.get("enabled", True) else "Включить"
+    enabled_text = BTN_PAUSE if user.get("enabled", True) else BTN_ENABLE
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Цена сейчас", callback_data="price_now"),
-                InlineKeyboardButton(text="Моя цель", callback_data="settings"),
+                InlineKeyboardButton(text=BTN_PRICE_NOW, callback_data="price_now"),
+                InlineKeyboardButton(text=BTN_SETTINGS, callback_data="settings"),
             ],
             [
-                InlineKeyboardButton(text="Изменить цену", callback_data="change_price"),
-                InlineKeyboardButton(text="Банк", callback_data="payments"),
+                InlineKeyboardButton(text=BTN_CHANGE_PRICE, callback_data="change_price"),
+                InlineKeyboardButton(text=BTN_PAYMENTS, callback_data="payments"),
             ],
             [
                 InlineKeyboardButton(text=enabled_text, callback_data="toggle"),
             ],
         ]
+    )
+
+
+def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
+    enabled_text = BTN_PAUSE
+    if user is not None and not user.get("enabled", True):
+        enabled_text = BTN_ENABLE
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=BTN_PRICE_NOW), KeyboardButton(text=BTN_SETTINGS)],
+            [KeyboardButton(text=BTN_CHANGE_PRICE), KeyboardButton(text=BTN_PAYMENTS)],
+            [KeyboardButton(text=enabled_text)],
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
+        input_field_placeholder="Выбери действие",
     )
 
 
@@ -353,7 +375,7 @@ async def main() -> None:
                 f"По умолчанию цель: <b>{user['target']} UAH</b>. "
                 f"Банк: <b>{payment_title(user_payment_methods(user))}</b>.\n"
                 "Как только цена будет такой или ниже, пришлю объявление.",
-                reply_markup=main_keyboard(user),
+                reply_markup=bottom_keyboard(user),
             )
 
         @router.message(Command("settings"))
@@ -364,7 +386,54 @@ async def main() -> None:
                 f"Цель: <b>{user['target']} UAH</b>\n"
                 f"Банк: <b>{payment_title(user_payment_methods(user))}</b>\n"
                 f"Оповещения: <b>{status}</b>",
-                reply_markup=main_keyboard(user),
+                reply_markup=bottom_keyboard(user),
+            )
+
+        @router.message(F.text == BTN_SETTINGS)
+        async def settings_button(message: Message) -> None:
+            await settings_command(message)
+
+        @router.message(F.text == BTN_PRICE_NOW)
+        async def price_now_button(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            await message.answer("Проверяю Binance...", reply_markup=bottom_keyboard(user))
+            await send_price(
+                bot,
+                message.chat.id,
+                p2p,
+                parse_price(str(user["target"])),
+                user_payment_methods(user),
+            )
+
+        @router.message(F.text == BTN_CHANGE_PRICE)
+        async def change_price_button(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            await message.answer(
+                "Выбери новую цель или введи свою цену:",
+                reply_markup=bottom_keyboard(user),
+            )
+            await message.answer("Пресеты цены:", reply_markup=presets_keyboard())
+
+        @router.message(F.text == BTN_PAYMENTS)
+        async def payments_button(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            selected = user_payment_methods(user)
+            await message.answer(
+                f"Фильтр оплаты: <b>{payment_title(selected)}</b>\n\n"
+                "Можно выбрать один или несколько банков.",
+                reply_markup=payments_keyboard(selected),
+            )
+
+        @router.message(F.text.in_({BTN_PAUSE, BTN_ENABLE}))
+        async def toggle_button(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            updated = await store.update_user(message.chat.id, enabled=not user.get("enabled", True))
+            status = "включены" if updated.get("enabled", True) else "на паузе"
+            await message.answer(
+                f"Цель: <b>{updated['target']} UAH</b>\n"
+                f"Банк: <b>{payment_title(user_payment_methods(updated))}</b>\n"
+                f"Оповещения: <b>{status}</b>",
+                reply_markup=bottom_keyboard(updated),
             )
 
         @router.callback_query(F.data == "settings")
@@ -486,7 +555,7 @@ async def main() -> None:
         async def text_price(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
             if not user.get("awaiting_price"):
-                await message.answer("Открой настройки кнопкой ниже.", reply_markup=main_keyboard(user))
+                await message.answer("Выбери действие на клавиатуре ниже.", reply_markup=bottom_keyboard(user))
                 return
 
             try:
@@ -503,7 +572,7 @@ async def main() -> None:
             )
             await message.answer(
                 f"Красиво. Теперь жду <b>{updated['target']} UAH</b> или ниже.",
-                reply_markup=main_keyboard(updated),
+                reply_markup=bottom_keyboard(updated),
             )
 
         dp.include_router(router)
