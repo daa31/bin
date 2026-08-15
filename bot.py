@@ -34,8 +34,6 @@ BTN_SETTINGS = "Моя цель"
 BTN_CHANGE_PRICE = "Изменить цену"
 BTN_PAYMENTS = "Банк"
 BTN_AMOUNT = "Сумма"
-BTN_PAUSE = "Пауза"
-BTN_ENABLE = "Включить"
 
 
 @dataclass
@@ -77,7 +75,6 @@ class UserStore:
         return {
             "target": str(self.default_target),
             "min_trade_amount": str(self.default_min_trade_amount),
-            "enabled": True,
             "awaiting_price": False,
             "awaiting_amount": False,
             "payment_methods": [],
@@ -238,7 +235,6 @@ def payment_title(methods: list[str]) -> str:
 
 
 def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
-    enabled_text = BTN_PAUSE if user.get("enabled", True) else BTN_ENABLE
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -251,21 +247,17 @@ def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
             ],
             [
                 InlineKeyboardButton(text=BTN_AMOUNT, callback_data="amount"),
-                InlineKeyboardButton(text=enabled_text, callback_data="toggle"),
             ],
         ]
     )
 
 
 def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
-    enabled_text = BTN_PAUSE
-    if user is not None and not user.get("enabled", True):
-        enabled_text = BTN_ENABLE
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_PRICE_NOW), KeyboardButton(text=BTN_SETTINGS)],
             [KeyboardButton(text=BTN_CHANGE_PRICE), KeyboardButton(text=BTN_PAYMENTS)],
-            [KeyboardButton(text=BTN_AMOUNT), KeyboardButton(text=enabled_text)],
+            [KeyboardButton(text=BTN_AMOUNT)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -390,8 +382,6 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
             users = await store.all_users()
             offers_by_filter: dict[tuple[str, ...], dict[str, Any] | None] = {}
             for chat_id, user in users.items():
-                if not user.get("enabled", True):
-                    continue
                 pay_types = user_payment_methods(user)
                 trans_amount = user_min_trade_amount(user)
                 filter_key = (*pay_types, f"amount:{trans_amount}")
@@ -448,12 +438,10 @@ async def main() -> None:
         @router.message(Command("settings"))
         async def settings_command(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
-            status = "включены" if user.get("enabled", True) else "на паузе"
             await message.answer(
                 f"Цель: <b>{user['target']} UAH</b>\n"
                 f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>\n"
-                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>\n"
-                f"Оповещения: <b>{status}</b>",
+                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>",
                 reply_markup=bottom_keyboard(user),
             )
 
@@ -502,28 +490,13 @@ async def main() -> None:
                 reply_markup=amount_presets_keyboard(),
             )
 
-        @router.message(F.text.in_({BTN_PAUSE, BTN_ENABLE}))
-        async def toggle_button(message: Message) -> None:
-            user = await store.ensure_user(message.chat.id)
-            updated = await store.update_user(message.chat.id, enabled=not user.get("enabled", True))
-            status = "включены" if updated.get("enabled", True) else "на паузе"
-            await message.answer(
-                f"Цель: <b>{updated['target']} UAH</b>\n"
-                f"Сумма: <b>от {user_min_trade_amount(updated)} UAH</b>\n"
-                f"Банк: <b>{payment_title(user_payment_methods(updated))}</b>\n"
-                f"Оповещения: <b>{status}</b>",
-                reply_markup=bottom_keyboard(updated),
-            )
-
         @router.callback_query(F.data == "settings")
         async def settings(callback: CallbackQuery) -> None:
             user = await store.ensure_user(callback.message.chat.id)
-            status = "включены" if user.get("enabled", True) else "на паузе"
             await callback.message.edit_text(
                 f"Цель: <b>{user['target']} UAH</b>\n"
                 f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>\n"
-                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>\n"
-                f"Оповещения: <b>{status}</b>",
+                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>",
                 reply_markup=main_keyboard(user),
             )
             await callback.answer()
@@ -540,20 +513,6 @@ async def main() -> None:
                 user_payment_methods(user),
                 user_min_trade_amount(user),
             )
-
-        @router.callback_query(F.data == "toggle")
-        async def toggle(callback: CallbackQuery) -> None:
-            user = await store.ensure_user(callback.message.chat.id)
-            updated = await store.update_user(callback.message.chat.id, enabled=not user.get("enabled", True))
-            status = "включены" if updated.get("enabled", True) else "на паузе"
-            await callback.message.edit_text(
-                f"Цель: <b>{updated['target']} UAH</b>\n"
-                f"Сумма: <b>от {user_min_trade_amount(updated)} UAH</b>\n"
-                f"Банк: <b>{payment_title(user_payment_methods(updated))}</b>\n"
-                f"Оповещения: <b>{status}</b>",
-                reply_markup=main_keyboard(updated),
-            )
-            await callback.answer()
 
         @router.callback_query(F.data == "payments")
         async def payments(callback: CallbackQuery) -> None:
