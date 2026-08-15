@@ -33,6 +33,7 @@ BTN_PRICE_NOW = "Цена сейчас"
 BTN_SETTINGS = "Моя цель"
 BTN_CHANGE_PRICE = "Изменить цену"
 BTN_PAYMENTS = "Банк"
+BTN_AMOUNT = "Сумма"
 BTN_PAUSE = "Пауза"
 BTN_ENABLE = "Включить"
 
@@ -41,6 +42,7 @@ BTN_ENABLE = "Включить"
 class Config:
     bot_token: str
     default_target_price: Decimal
+    default_min_trade_amount: Decimal
     check_interval_seconds: int
     asset: str
     fiat: str
@@ -49,9 +51,10 @@ class Config:
 
 
 class UserStore:
-    def __init__(self, path: Path, default_target: Decimal) -> None:
+    def __init__(self, path: Path, default_target: Decimal, default_min_trade_amount: Decimal) -> None:
         self.path = path
         self.default_target = default_target
+        self.default_min_trade_amount = default_min_trade_amount
         self._lock = asyncio.Lock()
         self._data: dict[str, dict[str, Any]] = {}
 
@@ -73,8 +76,10 @@ class UserStore:
     def _default_user(self) -> dict[str, Any]:
         return {
             "target": str(self.default_target),
+            "min_trade_amount": str(self.default_min_trade_amount),
             "enabled": True,
             "awaiting_price": False,
+            "awaiting_amount": False,
             "payment_methods": [],
             "last_alert_adv_no": None,
         }
@@ -105,7 +110,11 @@ class BinanceP2P:
         self.session = session
         self.config = config
 
-    async def best_offer(self, pay_types: list[str] | None = None) -> dict[str, Any] | None:
+    async def best_offer(
+        self,
+        pay_types: list[str] | None = None,
+        trans_amount: Decimal | None = None,
+    ) -> dict[str, Any] | None:
         pay_types = pay_types or []
         payload = {
             "fiat": self.config.fiat,
@@ -116,6 +125,8 @@ class BinanceP2P:
             "payTypes": pay_types,
             "publisherType": None,
         }
+        if trans_amount is not None and trans_amount > 0:
+            payload["transAmount"] = str(trans_amount.quantize(Decimal("1")))
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 Binance price alert bot",
@@ -147,7 +158,7 @@ class BinanceP2P:
                 for method in adv.get("tradeMethods", [])
                 if method.get("identifier") or method.get("payType")
             ],
-            "link": binance_web_url(self.config, pay_types),
+            "link": binance_web_url(self.config, pay_types, trans_amount),
         }
 
 
@@ -159,6 +170,7 @@ def load_config() -> Config:
     return Config(
         bot_token=token,
         default_target_price=parse_price(os.getenv("DEFAULT_TARGET_PRICE", "44.9")),
+        default_min_trade_amount=parse_amount(os.getenv("DEFAULT_MIN_TRADE_AMOUNT", "2000")),
         check_interval_seconds=max(15, int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))),
         asset=os.getenv("BINANCE_ASSET", "USDT").upper(),
         fiat=os.getenv("BINANCE_FIAT", "UAH").upper(),
@@ -178,14 +190,38 @@ def parse_price(value: str) -> Decimal:
     return price.quantize(Decimal("0.01"))
 
 
-def binance_web_url(config: Config, pay_types: list[str] | None = None) -> str:
+def parse_amount(value: str) -> Decimal:
+    normalized = value.strip().replace(",", ".").replace(" ", "")
+    try:
+        amount = Decimal(normalized)
+    except InvalidOperation as exc:
+        raise ValueError("Сумма должна быть числом, например 2000") from exc
+    if amount <= 0:
+        raise ValueError("Сумма должна быть больше нуля")
+    return amount.quantize(Decimal("1"))
+
+
+def user_min_trade_amount(user: dict[str, Any]) -> Decimal:
+    return parse_amount(str(user.get("min_trade_amount", "2000")))
+
+
+def binance_web_url(
+    config: Config,
+    pay_types: list[str] | None = None,
+    trans_amount: Decimal | None = None,
+) -> str:
     base = (
         f"https://p2p.binance.com/ru/trade/"
         f"{config.trade_type.lower()}/{config.asset}?fiat={config.fiat}"
     )
-    if not pay_types:
+    params = []
+    if pay_types:
+        params.append(f"payment={','.join(pay_types)}")
+    if trans_amount is not None and trans_amount > 0:
+        params.append(f"amount={trans_amount.quantize(Decimal('1'))}")
+    if not params:
         return base
-    return f"{base}&payment={','.join(pay_types)}"
+    return f"{base}&{'&'.join(params)}"
 
 
 def user_payment_methods(user: dict[str, Any]) -> list[str]:
@@ -214,6 +250,7 @@ def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text=BTN_PAYMENTS, callback_data="payments"),
             ],
             [
+                InlineKeyboardButton(text=BTN_AMOUNT, callback_data="amount"),
                 InlineKeyboardButton(text=enabled_text, callback_data="toggle"),
             ],
         ]
@@ -228,7 +265,7 @@ def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_PRICE_NOW), KeyboardButton(text=BTN_SETTINGS)],
             [KeyboardButton(text=BTN_CHANGE_PRICE), KeyboardButton(text=BTN_PAYMENTS)],
-            [KeyboardButton(text=enabled_text)],
+            [KeyboardButton(text=BTN_AMOUNT), KeyboardButton(text=enabled_text)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -250,6 +287,23 @@ def presets_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def amount_presets_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="1000 грн", callback_data="amount_preset:1000"),
+                InlineKeyboardButton(text="2000 грн", callback_data="amount_preset:2000"),
+            ],
+            [
+                InlineKeyboardButton(text="5000 грн", callback_data="amount_preset:5000"),
+                InlineKeyboardButton(text="10000 грн", callback_data="amount_preset:10000"),
+            ],
+            [InlineKeyboardButton(text="Ввести свою", callback_data="custom_amount")],
+            [InlineKeyboardButton(text="Назад", callback_data="settings")],
+        ]
+    )
+
+
 def payments_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
     rows = [[InlineKeyboardButton(text="✅ Все банки" if not selected else "Все банки", callback_data="pay:all")]]
     methods = list(PAYMENT_METHODS.items())
@@ -263,8 +317,18 @@ def payments_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def offer_text(offer: dict[str, Any], target: Decimal | None = None) -> str:
-    target_line = f"\nТвоя цель: <b>{target} {offer['fiat']}</b>" if target is not None else ""
+def offer_text(
+    offer: dict[str, Any],
+    target: Decimal | None = None,
+    trans_amount: Decimal | None = None,
+) -> str:
+    filter_lines = []
+    if target is not None:
+        filter_lines.append(f"Твоя цель: <b>{target} {offer['fiat']}</b>")
+    if trans_amount is not None:
+        filter_lines.append(f"Сумма поиска: <b>от {trans_amount} {offer['fiat']}</b>")
+    filter_text = "\n".join(filter_lines)
+    filter_block = f"\n{filter_text}\n" if filter_text else "\n"
     orders = offer.get("orders") or "-"
     finish_rate = offer.get("finish_rate")
     if finish_rate is not None:
@@ -283,7 +347,7 @@ def offer_text(offer: dict[str, Any], target: Decimal | None = None) -> str:
 
     return (
         f"🟢 <b>{offer['asset']}/{offer['fiat']}: {offer['price']} {offer['fiat']}</b>"
-        f"{target_line}\n\n"
+        f"{filter_block}\n"
         f"Продавец: <b>{html.escape(str(offer['merchant']))}</b>\n"
         f"Лимиты: {offer.get('min_amount') or '-'} - {offer.get('max_amount') or '-'} {offer['fiat']}\n"
         f"Доступно: {offer.get('available') or '-'} {offer['asset']}\n"
@@ -294,8 +358,8 @@ def offer_text(offer: dict[str, Any], target: Decimal | None = None) -> str:
     )
 
 
-def alert_text(offer: dict[str, Any], target: Decimal) -> str:
-    return "🔥 <b>Цена дошла до цели</b>\n\n" + offer_text(offer, target)
+def alert_text(offer: dict[str, Any], target: Decimal, trans_amount: Decimal) -> str:
+    return "🔥 <b>Цена дошла до цели</b>\n\n" + offer_text(offer, target, trans_amount)
 
 
 async def send_price(
@@ -304,14 +368,15 @@ async def send_price(
     p2p: BinanceP2P,
     target: Decimal | None = None,
     pay_types: list[str] | None = None,
+    trans_amount: Decimal | None = None,
 ) -> None:
-    offer = await p2p.best_offer(pay_types)
+    offer = await p2p.best_offer(pay_types, trans_amount)
     if offer is None:
         await bot.send_message(chat_id, "Сейчас Binance не вернул объявления под этот фильтр. Попробуй другой банк или чуть позже.")
         return
     await bot.send_message(
         chat_id,
-        offer_text(offer, target),
+        offer_text(offer, target, trans_amount),
         reply_markup=InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="Открыть Binance", url=offer["link"])]]
         ),
@@ -328,9 +393,10 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
                 if not user.get("enabled", True):
                     continue
                 pay_types = user_payment_methods(user)
-                filter_key = tuple(pay_types)
+                trans_amount = user_min_trade_amount(user)
+                filter_key = (*pay_types, f"amount:{trans_amount}")
                 if filter_key not in offers_by_filter:
-                    offers_by_filter[filter_key] = await p2p.best_offer(pay_types)
+                    offers_by_filter[filter_key] = await p2p.best_offer(pay_types, trans_amount)
                 offer = offers_by_filter[filter_key]
                 if offer is not None:
                     target = parse_price(str(user.get("target", p2p.config.default_target_price)))
@@ -339,7 +405,7 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
                     if price <= target and user.get("last_alert_adv_no") != adv_no:
                         await bot.send_message(
                             chat_id,
-                            alert_text(offer, target),
+                            alert_text(offer, target, trans_amount),
                             reply_markup=InlineKeyboardMarkup(
                                 inline_keyboard=[[InlineKeyboardButton(text="Открыть Binance", url=offer["link"])]]
                             ),
@@ -357,7 +423,7 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = load_config()
-    store = UserStore(config.data_file, config.default_target_price)
+    store = UserStore(config.data_file, config.default_target_price, config.default_min_trade_amount)
     await store.load()
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -373,6 +439,7 @@ async def main() -> None:
             await message.answer(
                 "Я слежу за зелёным стаканом Binance P2P USDT/UAH.\n"
                 f"По умолчанию цель: <b>{user['target']} UAH</b>. "
+                f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>. "
                 f"Банк: <b>{payment_title(user_payment_methods(user))}</b>.\n"
                 "Как только цена будет такой или ниже, пришлю объявление.",
                 reply_markup=bottom_keyboard(user),
@@ -384,6 +451,7 @@ async def main() -> None:
             status = "включены" if user.get("enabled", True) else "на паузе"
             await message.answer(
                 f"Цель: <b>{user['target']} UAH</b>\n"
+                f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>\n"
                 f"Банк: <b>{payment_title(user_payment_methods(user))}</b>\n"
                 f"Оповещения: <b>{status}</b>",
                 reply_markup=bottom_keyboard(user),
@@ -403,6 +471,7 @@ async def main() -> None:
                 p2p,
                 parse_price(str(user["target"])),
                 user_payment_methods(user),
+                user_min_trade_amount(user),
             )
 
         @router.message(F.text == BTN_CHANGE_PRICE)
@@ -424,6 +493,15 @@ async def main() -> None:
                 reply_markup=payments_keyboard(selected),
             )
 
+        @router.message(F.text == BTN_AMOUNT)
+        async def amount_button(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            await message.answer(
+                f"Минимальная сумма сделки: <b>от {user_min_trade_amount(user)} UAH</b>\n\n"
+                "Выбери пресет или введи свою сумму.",
+                reply_markup=amount_presets_keyboard(),
+            )
+
         @router.message(F.text.in_({BTN_PAUSE, BTN_ENABLE}))
         async def toggle_button(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
@@ -431,6 +509,7 @@ async def main() -> None:
             status = "включены" if updated.get("enabled", True) else "на паузе"
             await message.answer(
                 f"Цель: <b>{updated['target']} UAH</b>\n"
+                f"Сумма: <b>от {user_min_trade_amount(updated)} UAH</b>\n"
                 f"Банк: <b>{payment_title(user_payment_methods(updated))}</b>\n"
                 f"Оповещения: <b>{status}</b>",
                 reply_markup=bottom_keyboard(updated),
@@ -442,6 +521,7 @@ async def main() -> None:
             status = "включены" if user.get("enabled", True) else "на паузе"
             await callback.message.edit_text(
                 f"Цель: <b>{user['target']} UAH</b>\n"
+                f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>\n"
                 f"Банк: <b>{payment_title(user_payment_methods(user))}</b>\n"
                 f"Оповещения: <b>{status}</b>",
                 reply_markup=main_keyboard(user),
@@ -458,6 +538,7 @@ async def main() -> None:
                 p2p,
                 parse_price(str(user["target"])),
                 user_payment_methods(user),
+                user_min_trade_amount(user),
             )
 
         @router.callback_query(F.data == "toggle")
@@ -467,6 +548,7 @@ async def main() -> None:
             status = "включены" if updated.get("enabled", True) else "на паузе"
             await callback.message.edit_text(
                 f"Цель: <b>{updated['target']} UAH</b>\n"
+                f"Сумма: <b>от {user_min_trade_amount(updated)} UAH</b>\n"
                 f"Банк: <b>{payment_title(user_payment_methods(updated))}</b>\n"
                 f"Оповещения: <b>{status}</b>",
                 reply_markup=main_keyboard(updated),
@@ -482,6 +564,42 @@ async def main() -> None:
                 "Можно выбрать один или несколько банков.",
                 reply_markup=payments_keyboard(selected),
             )
+            await callback.answer()
+
+        @router.callback_query(F.data == "amount")
+        async def amount(callback: CallbackQuery) -> None:
+            user = await store.ensure_user(callback.message.chat.id)
+            await callback.message.edit_text(
+                f"Минимальная сумма сделки: <b>от {user_min_trade_amount(user)} UAH</b>\n\n"
+                "Выбери пресет или введи свою сумму.",
+                reply_markup=amount_presets_keyboard(),
+            )
+            await callback.answer()
+
+        @router.callback_query(F.data.startswith("amount_preset:"))
+        async def amount_preset(callback: CallbackQuery) -> None:
+            value = callback.data.split(":", 1)[1]
+            user = await store.update_user(
+                callback.message.chat.id,
+                min_trade_amount=str(parse_amount(value)),
+                awaiting_amount=False,
+                awaiting_price=False,
+                last_alert_adv_no=None,
+            )
+            await callback.message.edit_text(
+                f"Готово. Теперь ищу объявления <b>от {user_min_trade_amount(user)} UAH</b>.",
+                reply_markup=main_keyboard(user),
+            )
+            await callback.answer("Сохранено")
+
+        @router.callback_query(F.data == "custom_amount")
+        async def custom_amount(callback: CallbackQuery) -> None:
+            await store.update_user(
+                callback.message.chat.id,
+                awaiting_amount=True,
+                awaiting_price=False,
+            )
+            await callback.message.edit_text("Напиши сумму в гривне, например <b>2000</b>.")
             await callback.answer()
 
         @router.callback_query(F.data == "pay:all")
@@ -537,6 +655,7 @@ async def main() -> None:
                 callback.message.chat.id,
                 target=str(parse_price(value)),
                 awaiting_price=False,
+                awaiting_amount=False,
                 last_alert_adv_no=None,
             )
             await callback.message.edit_text(
@@ -547,13 +666,37 @@ async def main() -> None:
 
         @router.callback_query(F.data == "custom_price")
         async def custom_price(callback: CallbackQuery) -> None:
-            await store.update_user(callback.message.chat.id, awaiting_price=True)
+            await store.update_user(
+                callback.message.chat.id,
+                awaiting_price=True,
+                awaiting_amount=False,
+            )
             await callback.message.edit_text("Напиши цену числом, например <b>44.85</b>.")
             await callback.answer()
 
         @router.message(F.text)
         async def text_price(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
+            if user.get("awaiting_amount"):
+                try:
+                    amount = parse_amount(message.text or "")
+                except ValueError as exc:
+                    await message.answer(str(exc))
+                    return
+
+                updated = await store.update_user(
+                    message.chat.id,
+                    min_trade_amount=str(amount),
+                    awaiting_amount=False,
+                    awaiting_price=False,
+                    last_alert_adv_no=None,
+                )
+                await message.answer(
+                    f"Готово. Теперь фильтр суммы: <b>от {user_min_trade_amount(updated)} UAH</b>.",
+                    reply_markup=bottom_keyboard(updated),
+                )
+                return
+
             if not user.get("awaiting_price"):
                 await message.answer("Выбери действие на клавиатуре ниже.", reply_markup=bottom_keyboard(user))
                 return
@@ -568,6 +711,7 @@ async def main() -> None:
                 message.chat.id,
                 target=str(target),
                 awaiting_price=False,
+                awaiting_amount=False,
                 last_alert_adv_no=None,
             )
             await message.answer(

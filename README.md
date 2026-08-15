@@ -8,6 +8,7 @@ Telegram-бот отслеживает цену покупки USDT за UAH в 
 
 - кнопочное меню в Telegram;
 - отдельная целевая цена для каждого пользователя;
+- фильтр минимальной суммы сделки в UAH, по умолчанию `2000`;
 - фильтр способа оплаты: Monobank, PrivatBank, ПУМБ, А-Банк, Ощадбанк, Raiffeisen, izibank, Sportbank;
 - быстрая проверка текущей цены;
 - пауза и включение уведомлений;
@@ -21,6 +22,7 @@ Telegram-бот отслеживает цену покупки USDT за UAH в 
 ```env
 BOT_TOKEN=123456:telegram-bot-token
 DEFAULT_TARGET_PRICE=44.9
+DEFAULT_MIN_TRADE_AMOUNT=2000
 CHECK_INTERVAL_SECONDS=60
 BINANCE_ASSET=USDT
 BINANCE_FIAT=UAH
