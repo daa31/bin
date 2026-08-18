@@ -745,16 +745,16 @@ def offer_text(
     description_block = ""
     if book == BOOK_RED:
         description = str(offer.get("description") or "").strip() or "-"
-        description_block = f"<b>Описание:</b> {html.escape(description)}\n"
+        description_block = f"<b>Описание:</b> {html.escape(description)}\n\n"
 
     return (
         f"{book_emoji(book)} <b>{offer['asset']}/{offer['fiat']}: {offer['price']} {offer['fiat']}</b>"
         f"{filter_block}\n"
         f"<b>Стакан:</b> <b>{book_title(book)}</b>\n"
-        f"<b>Продавец:</b> <b>{html.escape(str(offer['merchant']))}</b>\n"
-        f"<b>Лимиты:</b> {offer.get('min_amount') or '-'} - {offer.get('max_amount') or '-'} {offer['fiat']}\n"
-        f"<b>Доступно:</b> {offer.get('available') or '-'} {offer['asset']}\n"
-        f"<b>Оплата:</b> {html.escape(methods_line)}\n"
+        f"<b>Продавец:</b> <b>{html.escape(str(offer['merchant']))}</b>\n\n"
+        f"<b>Лимиты:</b> {offer.get('min_amount') or '-'} - {offer.get('max_amount') or '-'} {offer['fiat']}\n\n"
+        f"<b>Доступно:</b> {offer.get('available') or '-'} {offer['asset']}\n\n"
+        f"<b>Оплата:</b> {html.escape(methods_line)}\n\n"
         f"{description_block}"
         f"<b>Сделок за месяц:</b> {orders}, <b>завершение:</b> {finish_rate}\n\n"
         f"<a href=\"{offer['link']}\">Открыть объявление на Binance P2P</a>\n"
