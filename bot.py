@@ -61,14 +61,14 @@ RED_BLOCKED_TERMS = (
     "не отправ",
     "не відправ",
 )
-BTN_SETTINGS = "Моя цель"
-BTN_BOOK = "Стакан"
-BTN_CHECK_GREEN = "Цена зелёный"
-BTN_CHECK_RED = "Цена красный"
-BTN_CHANGE_PRICE = "Изменить цену"
-BTN_PAYMENTS = "Банк"
-BTN_AMOUNT = "Сумма"
-BTN_BACK = "Назад"
+BTN_SETTINGS = "🎯 Моя цель"
+BTN_BOOK = "📊 Стакан"
+BTN_CHECK_GREEN = "🟢 Цена зелёный"
+BTN_CHECK_RED = "🔴 Цена красный"
+BTN_CHANGE_PRICE = "✏️ Изменить цену"
+BTN_PAYMENTS = "🏦 Банк"
+BTN_AMOUNT = "💰 Сумма"
+BTN_BACK = "⬅️ Назад"
 
 
 @dataclass
@@ -523,16 +523,16 @@ def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
 
 def book_keyboard(selected: str | None = None, show_back: bool = False) -> InlineKeyboardMarkup:
     rows = [
-        [
-            InlineKeyboardButton(
-                text=("✅ " if selected == BOOK_GREEN else "") + "Зелёный",
-                callback_data=f"book:set:{BOOK_GREEN}",
-            ),
-            InlineKeyboardButton(
-                text=("✅ " if selected == BOOK_RED else "") + "Красный",
-                callback_data=f"book:set:{BOOK_RED}",
-            ),
-        ],
+            [
+                InlineKeyboardButton(
+                    text=("✅ " if selected == BOOK_GREEN else "") + "🟢 Зелёный",
+                    callback_data=f"book:set:{BOOK_GREEN}",
+                ),
+                InlineKeyboardButton(
+                    text=("✅ " if selected == BOOK_RED else "") + "🔴 Красный",
+                    callback_data=f"book:set:{BOOK_RED}",
+                ),
+            ],
     ]
     if show_back:
         rows.append([InlineKeyboardButton(text=BTN_BACK, callback_data="settings")])
@@ -554,8 +554,8 @@ def presets_keyboard(book: str = BOOK_GREEN) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             first_row,
-            [InlineKeyboardButton(text="Ввести свою", callback_data="custom_price")],
-            [InlineKeyboardButton(text="Назад", callback_data="settings")],
+            [InlineKeyboardButton(text="⌨️ Ввести свою", callback_data="custom_price")],
+            [InlineKeyboardButton(text=BTN_BACK, callback_data="settings")],
         ]
     )
 
@@ -585,14 +585,14 @@ def amount_presets_keyboard(book: str = BOOK_GREEN) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             *rows,
-            [InlineKeyboardButton(text="Ввести свою", callback_data="custom_amount")],
-            [InlineKeyboardButton(text="Назад", callback_data="settings")],
+            [InlineKeyboardButton(text="⌨️ Ввести свою", callback_data="custom_amount")],
+            [InlineKeyboardButton(text=BTN_BACK, callback_data="settings")],
         ]
     )
 
 
 def payments_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text="✅ Все банки" if not selected else "Все банки", callback_data="pay:all")]]
+    rows = [[InlineKeyboardButton(text="✅ 🏦 Все банки" if not selected else "🏦 Все банки", callback_data="pay:all")]]
     methods = list(PAYMENT_METHODS.items())
     for index in range(0, len(methods), 2):
         row = []
@@ -600,7 +600,7 @@ def payments_keyboard(selected: list[str]) -> InlineKeyboardMarkup:
             prefix = "✅ " if code in selected else ""
             row.append(InlineKeyboardButton(text=f"{prefix}{title}", callback_data=f"pay:toggle:{code}"))
         rows.append(row)
-    rows.append([InlineKeyboardButton(text="Готово", callback_data="settings")])
+    rows.append([InlineKeyboardButton(text="✅ Готово", callback_data="settings")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -694,7 +694,7 @@ async def send_current_price(
         chat_id,
         offer_text(offer, target, min_trade_amount),
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Открыть Binance", url=offer["link"])]]
+            inline_keyboard=[[InlineKeyboardButton(text="🔗 Открыть Binance", url=offer["link"])]]
         ),
         disable_web_page_preview=True,
     )
@@ -729,7 +729,7 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
                             chat_id,
                             alert_text(offer, target, trans_amount),
                             reply_markup=InlineKeyboardMarkup(
-                                inline_keyboard=[[InlineKeyboardButton(text="Открыть Binance", url=offer["link"])]]
+                                inline_keyboard=[[InlineKeyboardButton(text="🔗 Открыть Binance", url=offer["link"])]]
                             ),
                             disable_web_page_preview=True,
                         )
@@ -763,8 +763,8 @@ async def main() -> None:
                 reply_markup=ReplyKeyboardRemove(),
             )
             await message.answer(
-                "Зелёный — цена дошла до цели или ниже.\n"
-                "Красный — цена дошла до цели или выше.",
+                "🟢 Зелёный — цена дошла до цели или ниже.\n"
+                "🔴 Красный — цена дошла до цели или выше.",
                 reply_markup=book_keyboard(user_book(user)),
             )
 
@@ -788,8 +788,8 @@ async def main() -> None:
                 reply_markup=ReplyKeyboardRemove(),
             )
             await message.answer(
-                "Зелёный — цена дошла до цели или ниже.\n"
-                "Красный — цена дошла до цели или выше.",
+                "🟢 Зелёный — цена дошла до цели или ниже.\n"
+                "🔴 Красный — цена дошла до цели или выше.",
                 reply_markup=book_keyboard(user_book(user)),
             )
 
@@ -869,8 +869,8 @@ async def main() -> None:
             user = await store.ensure_user(callback.message.chat.id)
             await callback.message.edit_text(
                 "Выбери стакан, который хочешь анализировать:\n\n"
-                "Зелёный — цена дошла до цели или ниже.\n"
-                "Красный — цена дошла до цели или выше.",
+                "🟢 Зелёный — цена дошла до цели или ниже.\n"
+                "🔴 Красный — цена дошла до цели или выше.",
                 reply_markup=book_keyboard(user_book(user)),
             )
             await callback.answer()
