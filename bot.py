@@ -897,6 +897,17 @@ async def main() -> None:
                 reply_markup=bottom_keyboard(user),
             )
 
+        @router.message(Command("help"))
+        async def help_command(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            await message.answer(
+                "<b>Команды</b>\n\n"
+                "<b>.stop</b> — остановить постоянный анализ.\n"
+                "<b>.start</b> — возобновить постоянный анализ.\n\n"
+                "Настройки зелёного и красного стакана при этом сохраняются.",
+                reply_markup=bottom_keyboard(user),
+            )
+
         @router.message(F.text == BTN_SETTINGS)
         async def settings_button(message: Message) -> None:
             await settings_command(message)
