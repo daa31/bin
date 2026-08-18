@@ -897,7 +897,7 @@ async def main() -> None:
                 reply_markup=bottom_keyboard(user),
             )
 
-        @router.message(Command("help"))
+        @router.message(lambda message: bool(message.text) and message.text.strip().casefold() in {"/help", "help", "хелп"})
         async def help_command(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
             await message.answer(
