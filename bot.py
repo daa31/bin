@@ -15,7 +15,15 @@ from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
-from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
 
 
 BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
@@ -60,6 +68,7 @@ BTN_CHECK_RED = "Цена красный"
 BTN_CHANGE_PRICE = "Изменить цену"
 BTN_PAYMENTS = "Банк"
 BTN_AMOUNT = "Сумма"
+BTN_BACK = "Назад"
 
 
 @dataclass
@@ -492,6 +501,7 @@ def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text=BTN_AMOUNT, callback_data="amount"),
             ],
+            [InlineKeyboardButton(text=BTN_BACK, callback_data="book")],
         ]
     )
 
@@ -503,6 +513,7 @@ def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_BOOK)],
             [KeyboardButton(text=BTN_CHANGE_PRICE), KeyboardButton(text=BTN_PAYMENTS)],
             [KeyboardButton(text=BTN_AMOUNT)],
+            [KeyboardButton(text=BTN_BACK)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -510,22 +521,22 @@ def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
     )
 
 
-def book_keyboard(selected: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text=("✅ " if selected == BOOK_GREEN else "") + "Зелёный",
-                    callback_data=f"book:set:{BOOK_GREEN}",
-                ),
-                InlineKeyboardButton(
-                    text=("✅ " if selected == BOOK_RED else "") + "Красный",
-                    callback_data=f"book:set:{BOOK_RED}",
-                ),
-            ],
-            [InlineKeyboardButton(text="Назад", callback_data="settings")],
-        ]
-    )
+def book_keyboard(selected: str | None = None, show_back: bool = False) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=("✅ " if selected == BOOK_GREEN else "") + "Зелёный",
+                callback_data=f"book:set:{BOOK_GREEN}",
+            ),
+            InlineKeyboardButton(
+                text=("✅ " if selected == BOOK_RED else "") + "Красный",
+                callback_data=f"book:set:{BOOK_RED}",
+            ),
+        ],
+    ]
+    if show_back:
+        rows.append([InlineKeyboardButton(text=BTN_BACK, callback_data="settings")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def presets_keyboard(book: str = BOOK_GREEN) -> InlineKeyboardMarkup:
@@ -748,13 +759,13 @@ async def main() -> None:
         async def start(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
             await message.answer(
-                f"Я слежу за Binance P2P USDT/UAH: зелёный или красный стакан на выбор.\n"
-                f"Сейчас: <b>{book_title(user)}</b>. "
-                f"Цель: <b>{user['target']} UAH</b> {user_price_direction(user)}. "
-                f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>. "
-                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>.\n"
-                "Как только цена дойдёт до цели, пришлю объявление.",
-                reply_markup=bottom_keyboard(user),
+                "Выбери стакан, который хочешь анализировать:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await message.answer(
+                "Зелёный — цена дошла до цели или ниже.\n"
+                "Красный — цена дошла до цели или выше.",
+                reply_markup=book_keyboard(user_book(user)),
             )
 
         @router.message(Command("settings"))
@@ -768,6 +779,19 @@ async def main() -> None:
         @router.message(F.text == BTN_SETTINGS)
         async def settings_button(message: Message) -> None:
             await settings_command(message)
+
+        @router.message(F.text == BTN_BACK)
+        async def back_button(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            await message.answer(
+                "Выбери стакан, который хочешь анализировать:",
+                reply_markup=ReplyKeyboardRemove(),
+            )
+            await message.answer(
+                "Зелёный — цена дошла до цели или ниже.\n"
+                "Красный — цена дошла до цели или выше.",
+                reply_markup=book_keyboard(user_book(user)),
+            )
 
         @router.message(F.text == BTN_CHECK_GREEN)
         async def check_green_button(message: Message) -> None:
@@ -787,7 +811,7 @@ async def main() -> None:
             await message.answer(
                 f"Сейчас выбран: <b>{book_title(user)}</b>.\n\n"
                 "Красный стакан дополнительно скрывает объявления с ФОП/физ/IBAN и похожими условиями в описании.",
-                reply_markup=book_keyboard(user_book(user)),
+                reply_markup=book_keyboard(user_book(user), show_back=True),
             )
 
         @router.message(F.text == BTN_CHANGE_PRICE)
@@ -844,8 +868,9 @@ async def main() -> None:
         async def book(callback: CallbackQuery) -> None:
             user = await store.ensure_user(callback.message.chat.id)
             await callback.message.edit_text(
-                f"Сейчас выбран: <b>{book_title(user)}</b>.\n\n"
-                "Красный стакан дополнительно скрывает объявления с ФОП/физ/IBAN и похожими условиями в описании.",
+                "Выбери стакан, который хочешь анализировать:\n\n"
+                "Зелёный — цена дошла до цели или ниже.\n"
+                "Красный — цена дошла до цели или выше.",
                 reply_markup=book_keyboard(user_book(user)),
             )
             await callback.answer()
@@ -880,6 +905,10 @@ async def main() -> None:
             await callback.message.edit_text(
                 f"Готово. Теперь выбран <b>{book_title(user)}</b>.\n\n{user_settings_text(user)}",
                 reply_markup=main_keyboard(user),
+            )
+            await callback.message.answer(
+                "Меню выбранного стакана:",
+                reply_markup=bottom_keyboard(user),
             )
             await callback.answer("Сохранено")
 
