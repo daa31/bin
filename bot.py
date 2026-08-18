@@ -797,6 +797,15 @@ async def send_current_price(
         )
         return
 
+    price = offer["price"]
+    if not is_target_reached(book, price, target):
+        await bot.send_message(
+            chat_id,
+            f"Цена ещё не дошла до цели: сейчас <b>{price} {p2p.config.fiat}</b>, "
+            f"цель <b>{target} {p2p.config.fiat}</b> {user_price_direction({'book': book})}.",
+        )
+        return
+
     await bot.send_message(
         chat_id,
         offer_text(offer, target, min_trade_amount),
