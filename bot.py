@@ -58,6 +58,20 @@ RED_BLOCKED_TERMS = (
     "ибан",
     "банка",
     "банки",
+    "конверт",
+    "konvert",
+    "квитанци",
+    "квитанці",
+    "не предостав",
+    "не нада",
+    "разных отправ",
+    "різних відправ",
+    "разные отправ",
+    "різні відправ",
+    "разных платель",
+    "різних платник",
+    "пополнения",
+    "поповнення",
     "не отправ",
     "не відправ",
 )
@@ -388,6 +402,18 @@ def clean_description_text(adv: dict[str, Any]) -> str:
 def has_blocked_red_description(adv: dict[str, Any]) -> bool:
     description = normalize_red_description(red_description_text(adv))
     if any(normalize_red_description(term) in description for term in RED_BLOCKED_TERMS):
+        return True
+    if ("квитанц" in description or "квитанці" in description) and (
+        "не предостав" in description or "не нада" in description
+    ):
+        return True
+    if ("разн" in description or "різн" in description) and (
+        "отправител" in description or "відправник" in description or "платель" in description or "платник" in description
+    ):
+        return True
+    if ("пополнен" in description or "поповнен" in description) and (
+        "сумм" in description or "грн" in description
+    ):
         return True
     return "карт" in description and "не" in description and (
         "отправ" in description or "відправ" in description
