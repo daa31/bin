@@ -19,6 +19,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 
 BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+BINANCE_P2P_ADV_DETAIL_URL = "https://p2p.binance.com/bapi/c2c/v2/public/c2c/adv/detail"
 PAYMENT_METHODS = {
     "Monobank": "Monobank",
     "PrivatBank": "PrivatBank",
@@ -48,11 +49,14 @@ RED_BLOCKED_TERMS = (
     "іban",
     "ибан",
     "банка",
+    "банки",
     "не отправ",
     "не відправ",
 )
 BTN_SETTINGS = "Моя цель"
 BTN_BOOK = "Стакан"
+BTN_CHECK_GREEN = "Цена зелёный"
+BTN_CHECK_RED = "Цена красный"
 BTN_CHANGE_PRICE = "Изменить цену"
 BTN_PAYMENTS = "Банк"
 BTN_AMOUNT = "Сумма"
@@ -215,8 +219,13 @@ class BinanceP2P:
 
             for row in rows:
                 adv = row["adv"]
-                if exclude_red_descriptions and has_blocked_red_description(adv):
-                    continue
+                adv_text = adv
+                if exclude_red_descriptions:
+                    detail = await self.adv_detail(str(adv["advNo"]))
+                    if detail is not None:
+                        adv_text = {**adv, **detail}
+                    if has_blocked_red_description(adv_text):
+                        continue
                 min_amount = decimal_or_none(adv.get("minSingleTransAmount"))
                 if (
                     min_trade_amount is not None
@@ -243,10 +252,28 @@ class BinanceP2P:
                         if method.get("identifier") or method.get("payType")
                     ],
                     "book": BOOK_RED if trade_type == self.config.red_trade_type else BOOK_GREEN,
-                    "description": clean_description_text(adv),
+                    "description": clean_description_text(adv_text),
                     "link": binance_web_url(self.config, trade_type, pay_types),
                 }
 
+        return None
+
+    async def adv_detail(self, adv_no: str) -> dict[str, Any] | None:
+        headers = {"User-Agent": "Mozilla/5.0 Binance price alert bot"}
+        async with self.session.get(
+            BINANCE_P2P_ADV_DETAIL_URL,
+            params={"advNo": adv_no},
+            headers=headers,
+            timeout=20,
+        ) as response:
+            if response.status >= 400:
+                logging.warning("Binance adv detail failed for %s: HTTP %s", adv_no, response.status)
+                return None
+            body = await response.json()
+
+        data = body.get("data")
+        if isinstance(data, dict):
+            return data
         return None
 
 
@@ -320,6 +347,16 @@ def red_description_text(adv: dict[str, Any]) -> str:
     return " ".join(str(adv.get(field) or "") for field in fields).lower()
 
 
+def normalize_red_description(description: str) -> str:
+    return (
+        description.lower()
+        .replace("o", "о")
+        .replace("0", "о")
+        .replace("i", "і")
+        .replace("ı", "і")
+    )
+
+
 def clean_description_text(adv: dict[str, Any]) -> str:
     fields = (
         "remarks",
@@ -334,8 +371,8 @@ def clean_description_text(adv: dict[str, Any]) -> str:
 
 
 def has_blocked_red_description(adv: dict[str, Any]) -> bool:
-    description = red_description_text(adv)
-    if any(term in description for term in RED_BLOCKED_TERMS):
+    description = normalize_red_description(red_description_text(adv))
+    if any(normalize_red_description(term) in description for term in RED_BLOCKED_TERMS):
         return True
     return "карт" in description and "не" in description and (
         "отправ" in description or "відправ" in description
@@ -385,6 +422,13 @@ def user_settings_text(user: dict[str, Any]) -> str:
     )
 
 
+def user_values_for_book(user: dict[str, Any], book: str, config: Config) -> tuple[Decimal, Decimal]:
+    default_target, default_min_trade_amount = default_values_for_book(book, config)
+    target = parse_price(str(user.get(f"{book}_target", default_target)))
+    min_trade_amount = parse_amount(str(user.get(f"{book}_min_trade_amount", default_min_trade_amount)))
+    return target, min_trade_amount
+
+
 def user_min_trade_amount(user: dict[str, Any]) -> Decimal:
     return parse_amount(str(user.get("min_trade_amount", "2000")))
 
@@ -426,6 +470,10 @@ def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
+                InlineKeyboardButton(text=BTN_CHECK_GREEN, callback_data=f"price_now:{BOOK_GREEN}"),
+                InlineKeyboardButton(text=BTN_CHECK_RED, callback_data=f"price_now:{BOOK_RED}"),
+            ],
+            [
                 InlineKeyboardButton(text=BTN_SETTINGS, callback_data="settings"),
                 InlineKeyboardButton(text=BTN_BOOK, callback_data="book"),
             ],
@@ -443,6 +491,7 @@ def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
 def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text=BTN_CHECK_GREEN), KeyboardButton(text=BTN_CHECK_RED)],
             [KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_BOOK)],
             [KeyboardButton(text=BTN_CHANGE_PRICE), KeyboardButton(text=BTN_PAYMENTS)],
             [KeyboardButton(text=BTN_AMOUNT)],
@@ -589,6 +638,44 @@ def alert_text(offer: dict[str, Any], target: Decimal, trans_amount: Decimal) ->
     return f"🔥 <b>Цена дошла до цели {direction}</b>\n\n" + offer_text(offer, target, trans_amount)
 
 
+async def send_current_price(
+    bot: Bot,
+    chat_id: int,
+    p2p: BinanceP2P,
+    user: dict[str, Any],
+    book: str,
+) -> None:
+    if book not in BOOK_TITLES:
+        await bot.send_message(chat_id, "Неизвестный стакан.")
+        return
+
+    pay_types = user_payment_methods(user)
+    target, min_trade_amount = user_values_for_book(user, book, p2p.config)
+    trade_type = p2p.config.red_trade_type if book == BOOK_RED else p2p.config.trade_type
+    offer = await p2p.best_offer(
+        trade_type,
+        pay_types,
+        min_trade_amount,
+        exclude_red_descriptions=book == BOOK_RED,
+    )
+    if offer is None:
+        await bot.send_message(
+            chat_id,
+            f"Сейчас Binance не вернул объявления под фильтр: {book_title(book)}, "
+            f"сумма от {min_trade_amount} {p2p.config.fiat}, банк {payment_title(pay_types)}.",
+        )
+        return
+
+    await bot.send_message(
+        chat_id,
+        offer_text(offer, target, min_trade_amount),
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Открыть Binance", url=offer["link"])]]
+        ),
+        disable_web_page_preview=True,
+    )
+
+
 async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: int) -> None:
     while True:
         try:
@@ -668,6 +755,18 @@ async def main() -> None:
         async def settings_button(message: Message) -> None:
             await settings_command(message)
 
+        @router.message(F.text == BTN_CHECK_GREEN)
+        async def check_green_button(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            await message.answer("Проверяю зелёный стакан...", reply_markup=bottom_keyboard(user))
+            await send_current_price(bot, message.chat.id, p2p, user, BOOK_GREEN)
+
+        @router.message(F.text == BTN_CHECK_RED)
+        async def check_red_button(message: Message) -> None:
+            user = await store.ensure_user(message.chat.id)
+            await message.answer("Проверяю красный стакан...", reply_markup=bottom_keyboard(user))
+            await send_current_price(bot, message.chat.id, p2p, user, BOOK_RED)
+
         @router.message(F.text == BTN_BOOK)
         async def book_button(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
@@ -713,6 +812,17 @@ async def main() -> None:
                 reply_markup=main_keyboard(user),
             )
             await callback.answer()
+
+        @router.callback_query(F.data.startswith("price_now:"))
+        async def price_now(callback: CallbackQuery) -> None:
+            book = callback.data.split(":", 1)[1]
+            user = await store.ensure_user(callback.message.chat.id)
+            if book not in BOOK_TITLES:
+                await callback.answer("Неизвестный стакан", show_alert=True)
+                return
+
+            await callback.answer(f"Проверяю {book_title(book)}...")
+            await send_current_price(bot, callback.message.chat.id, p2p, user, book)
 
         @router.callback_query(F.data == "book")
         async def book(callback: CallbackQuery) -> None:
