@@ -68,8 +68,24 @@ RED_BLOCKED_TERMS = (
     "різних платник",
     "пополнения",
     "поповнення",
+    "api-ключ",
+    "api ключ",
+    "api-key",
+    "апі-ключ",
+    "апі ключ",
     "довірених осіб",
+    "довірних осіб",
     "доверенных лиц",
+    "чеки та квитанції",
+    "не надсила",
+    "не висила",
+    "не отправля",
+    "багатьма переказ",
+    "многими перевод",
+    "багато платеж",
+    "много платеж",
+    "платежі від довір",
+    "платежи от довер",
     "через ліміти",
     "через лимиты",
     "декількома транзак",
@@ -255,9 +271,13 @@ class BinanceP2P:
                 adv = row["adv"]
                 adv_text = adv
                 if exclude_red_descriptions:
+                    if has_blocked_red_payment_method(adv):
+                        continue
                     detail = await self.adv_detail(str(adv["advNo"]))
                     if detail is not None:
                         adv_text = {**adv, **detail}
+                    if has_blocked_red_payment_method(adv_text):
+                        continue
                     if has_blocked_red_description(adv_text):
                         continue
                 min_amount = decimal_or_none(adv.get("minSingleTransAmount"))
@@ -440,6 +460,15 @@ def has_blocked_red_description(adv: dict[str, Any]) -> bool:
     return "карт" in description and "не" in description and (
         "отправ" in description or "відправ" in description
     )
+
+
+def has_blocked_red_payment_method(adv: dict[str, Any]) -> bool:
+    methods = [
+        str(method.get("identifier") or method.get("payType") or "").lower()
+        for method in adv.get("tradeMethods", [])
+        if isinstance(method, dict)
+    ]
+    return any("iban" in method for method in methods)
 
 
 def user_book(user: dict[str, Any]) -> str:
