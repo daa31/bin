@@ -79,6 +79,8 @@ RED_BLOCKED_TERMS = (
     "довірених лиць",
     "довірних лиць",
     "доверенных лиц",
+    "дов особи",
+    "дов. особи",
     "от 3 лица",
     "від 3 особи",
     "від 3 особ",
@@ -113,6 +115,8 @@ RED_BLOCKED_TERMS = (
     "платежи от довер",
     "через ліміти",
     "через лимиты",
+    "з лімітами",
+    "с лимитами",
     "декількома транзак",
     "несколькими транзак",
     "декілька транзак",
@@ -432,8 +436,9 @@ def red_description_text(adv: dict[str, Any]) -> str:
 
 
 def normalize_red_description(description: str) -> str:
+    normalized = " ".join(description.lower().split())
     return (
-        description.lower()
+        normalized
         .replace("o", "о")
         .replace("0", "о")
         .replace("i", "і")
@@ -713,12 +718,12 @@ def offer_text(
 ) -> str:
     filter_lines = []
     if target is not None:
-        filter_lines.append(f"Твоя цель: <b>{target} {offer['fiat']}</b>")
+        filter_lines.append(f"<b>Твоя цель:</b> <b>{target} {offer['fiat']}</b>")
     if trans_amount is not None:
         if offer.get("book") == BOOK_RED:
-            filter_lines.append(f"Сумма сделки: <b>{trans_amount} {offer['fiat']}</b>")
+            filter_lines.append(f"<b>Сумма сделки:</b> <b>{trans_amount} {offer['fiat']}</b>")
         else:
-            filter_lines.append(f"Сумма поиска: <b>от {trans_amount} {offer['fiat']}</b>")
+            filter_lines.append(f"<b>Сумма поиска:</b> <b>от {trans_amount} {offer['fiat']}</b>")
     filter_text = "\n".join(filter_lines)
     filter_block = f"\n{filter_text}\n" if filter_text else "\n"
     orders = offer.get("orders") or "-"
@@ -740,20 +745,20 @@ def offer_text(
     description_block = ""
     if book == BOOK_RED:
         description = str(offer.get("description") or "").strip() or "-"
-        description_block = f"Описание: {html.escape(description)}\n"
+        description_block = f"<b>Описание:</b> {html.escape(description)}\n"
 
     return (
         f"{book_emoji(book)} <b>{offer['asset']}/{offer['fiat']}: {offer['price']} {offer['fiat']}</b>"
         f"{filter_block}\n"
-        f"Стакан: <b>{book_title(book)}</b>\n"
-        f"Продавец: <b>{html.escape(str(offer['merchant']))}</b>\n"
-        f"Лимиты: {offer.get('min_amount') or '-'} - {offer.get('max_amount') or '-'} {offer['fiat']}\n"
-        f"Доступно: {offer.get('available') or '-'} {offer['asset']}\n"
-        f"Оплата: {html.escape(methods_line)}\n"
+        f"<b>Стакан:</b> <b>{book_title(book)}</b>\n"
+        f"<b>Продавец:</b> <b>{html.escape(str(offer['merchant']))}</b>\n"
+        f"<b>Лимиты:</b> {offer.get('min_amount') or '-'} - {offer.get('max_amount') or '-'} {offer['fiat']}\n"
+        f"<b>Доступно:</b> {offer.get('available') or '-'} {offer['asset']}\n"
+        f"<b>Оплата:</b> {html.escape(methods_line)}\n"
         f"{description_block}"
-        f"Сделок за месяц: {orders}, завершение: {finish_rate}\n\n"
+        f"<b>Сделок за месяц:</b> {orders}, <b>завершение:</b> {finish_rate}\n\n"
         f"<a href=\"{offer['link']}\">Открыть объявление на Binance P2P</a>\n"
-        f"ID объявления: <code>{offer['adv_no']}</code>"
+        f"<b>ID объявления:</b> <code>{offer['adv_no']}</code>"
     )
 
 
