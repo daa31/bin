@@ -460,9 +460,39 @@ def clean_description_text(adv: dict[str, Any]) -> str:
     return "\n".join(part for part in parts if part)
 
 
+def has_oschad_to_oschad_pattern(description: str) -> bool:
+    oschad_mentions = description.count("ощад")
+    has_third_party_marker = any(
+        marker in description
+        for marker in (
+            "от 3",
+            "від 3",
+            "3х",
+            "3-х",
+            "3 х",
+            "треть",
+            "третіх",
+        )
+    )
+    has_transfer_marker = any(
+        marker in description
+        for marker in (
+            "на ощад",
+            "ощад на ощад",
+            "с ощад",
+            "з ощад",
+        )
+    )
+    return oschad_mentions >= 2 and has_third_party_marker and (
+        has_transfer_marker or "ощад" in description
+    )
+
+
 def has_blocked_red_description(adv: dict[str, Any]) -> bool:
     description = normalize_red_description(red_description_text(adv))
     if any(normalize_red_description(term) in description for term in RED_BLOCKED_TERMS):
+        return True
+    if has_oschad_to_oschad_pattern(description):
         return True
     if ("квитанц" in description or "квитанці" in description) and (
         "не предостав" in description or "не нада" in description or "не можу нада" in description
