@@ -60,10 +60,6 @@ RED_BLOCKED_TERMS = (
     "банки",
     "конверт",
     "konvert",
-    "квитанци",
-    "квитанці",
-    "не предостав",
-    "не нада",
     "разных отправ",
     "різних відправ",
     "разные отправ",
@@ -72,6 +68,20 @@ RED_BLOCKED_TERMS = (
     "різних платник",
     "пополнения",
     "поповнення",
+    "довірених осіб",
+    "доверенных лиц",
+    "через ліміти",
+    "через лимиты",
+    "декількома транзак",
+    "несколькими транзак",
+    "декілька транзак",
+    "несколько транзак",
+    "не можу надати",
+    "не могу предоставить",
+    "скрін зарахування",
+    "скрин зачисления",
+    "зарахування у виписці",
+    "зачисления в выписке",
     "не отправ",
     "не відправ",
 )
@@ -404,7 +414,19 @@ def has_blocked_red_description(adv: dict[str, Any]) -> bool:
     if any(normalize_red_description(term) in description for term in RED_BLOCKED_TERMS):
         return True
     if ("квитанц" in description or "квитанці" in description) and (
-        "не предостав" in description or "не нада" in description
+        "не предостав" in description or "не нада" in description or "не можу нада" in description
+    ):
+        return True
+    if ("транзакц" in description or "транзакці" in description) and (
+        "декіль" in description or "несколь" in description or "3-15" in description or "через ліміт" in description
+    ):
+        return True
+    if ("довірен" in description or "доверенн" in description) and (
+        "особ" in description or "лиц" in description
+    ):
+        return True
+    if ("скрін" in description or "скрин" in description) and (
+        "зарахуван" in description or "зачислен" in description or "виписц" in description or "выписк" in description
     ):
         return True
     if ("разн" in description or "різн" in description) and (
