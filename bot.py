@@ -28,6 +28,7 @@ from aiogram.types import (
 
 BINANCE_P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
 BINANCE_P2P_ADV_DETAIL_URL = "https://p2p.binance.com/bapi/c2c/v2/public/c2c/adv/detail"
+BINANCE_P2P_MAX_PAGES = 25
 PAYMENT_METHODS = {
     "Monobank": "Monobank",
     "PrivatBank": "PrivatBank",
@@ -75,7 +76,17 @@ RED_BLOCKED_TERMS = (
     "апі ключ",
     "довірених осіб",
     "довірних осіб",
+    "довірених лиць",
+    "довірних лиць",
     "доверенных лиц",
+    "от 3 лица",
+    "від 3 особи",
+    "від 3 особ",
+    "3 лица",
+    "3 особи",
+    "3 особ",
+    "третьих лиц",
+    "третіх осіб",
     "чеки та квитанції",
     "не надсила",
     "не висила",
@@ -84,6 +95,20 @@ RED_BLOCKED_TERMS = (
     "многими перевод",
     "багато платеж",
     "много платеж",
+    "декілька платеж",
+    "кілька платеж",
+    "несколько платеж",
+    "поділена на кілька",
+    "поделена на несколько",
+    "оплата може бути поділена",
+    "оплата может быть поделена",
+    "фінансові переказ",
+    "финансовые перевод",
+    "комісію сплачує клієнт",
+    "комиссию платит клиент",
+    "1-3 платеж",
+    "2-3 платеж",
+    "3-15 транзак",
     "платежі від довір",
     "платежи от довер",
     "через ліміти",
@@ -249,7 +274,7 @@ class BinanceP2P:
             "User-Agent": "Mozilla/5.0 Binance price alert bot",
         }
 
-        for page in range(1, 6):
+        for page in range(1, BINANCE_P2P_MAX_PAGES + 1):
             payload = {
                 "fiat": self.config.fiat,
                 "page": page,
