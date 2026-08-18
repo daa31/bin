@@ -329,7 +329,7 @@ def load_config() -> Config:
         default_target_price=parse_price(os.getenv("DEFAULT_TARGET_PRICE", "44.9")),
         default_min_trade_amount=parse_amount(os.getenv("DEFAULT_MIN_TRADE_AMOUNT", "2000")),
         default_red_target_price=parse_price(os.getenv("DEFAULT_RED_TARGET_PRICE", "45.4")),
-        default_red_min_trade_amount=parse_amount(os.getenv("DEFAULT_RED_MIN_TRADE_AMOUNT", "150000")),
+        default_red_min_trade_amount=parse_amount(os.getenv("DEFAULT_RED_MIN_TRADE_AMOUNT", "15000")),
         check_interval_seconds=max(15, int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))),
         asset=os.getenv("BINANCE_ASSET", "USDT").upper(),
         fiat=os.getenv("BINANCE_FIAT", "UAH").upper(),
@@ -622,12 +622,12 @@ def amount_presets_keyboard(book: str = BOOK_GREEN) -> InlineKeyboardMarkup:
     if book == BOOK_RED:
         rows = [
             [
-                InlineKeyboardButton(text="50000 грн", callback_data="amount_preset:50000"),
-                InlineKeyboardButton(text="100000 грн", callback_data="amount_preset:100000"),
+                InlineKeyboardButton(text="5000 грн", callback_data="amount_preset:5000"),
+                InlineKeyboardButton(text="10000 грн", callback_data="amount_preset:10000"),
             ],
             [
-                InlineKeyboardButton(text="150000 грн", callback_data="amount_preset:150000"),
-                InlineKeyboardButton(text="250000 грн", callback_data="amount_preset:250000"),
+                InlineKeyboardButton(text="15000 грн", callback_data="amount_preset:15000"),
+                InlineKeyboardButton(text="25000 грн", callback_data="amount_preset:25000"),
             ],
         ]
     return InlineKeyboardMarkup(
@@ -1005,7 +1005,7 @@ async def main() -> None:
         @router.callback_query(F.data == "custom_amount")
         async def custom_amount(callback: CallbackQuery) -> None:
             user = await store.ensure_user(callback.message.chat.id)
-            example = "150000" if user_book(user) == BOOK_RED else "2000"
+            example = "15000" if user_book(user) == BOOK_RED else "2000"
             await store.update_user(
                 callback.message.chat.id,
                 awaiting_amount=True,

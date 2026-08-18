@@ -3,7 +3,7 @@
 Telegram-бот отслеживает цену USDT за UAH в Binance P2P и присылает уведомление, когда цена в выбранном стакане доходит до цели.
 
 По умолчанию зелёный стакан: `44.9 UAH` и сумма `от 2000 UAH`.
-По умолчанию красный стакан: `45.4 UAH` и сумма `от 150000 UAH`.
+По умолчанию красный стакан: `45.4 UAH` и сумма `15000 UAH`.
 
 ## Возможности
 
@@ -28,7 +28,7 @@ BOT_TOKEN=123456:telegram-bot-token
 DEFAULT_TARGET_PRICE=44.9
 DEFAULT_MIN_TRADE_AMOUNT=2000
 DEFAULT_RED_TARGET_PRICE=45.4
-DEFAULT_RED_MIN_TRADE_AMOUNT=150000
+DEFAULT_RED_MIN_TRADE_AMOUNT=15000
 CHECK_INTERVAL_SECONDS=60
 BINANCE_ASSET=USDT
 BINANCE_FIAT=UAH
