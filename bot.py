@@ -29,8 +29,30 @@ PAYMENT_METHODS = {
     "izibank": "izibank",
     "Sportbank": "Sportbank",
 }
-BTN_PRICE_NOW = "Цена сейчас"
+BOOK_GREEN = "green"
+BOOK_RED = "red"
+BOOK_TITLES = {
+    BOOK_GREEN: "зелёный стакан",
+    BOOK_RED: "красный стакан",
+}
+BOOK_EMOJI = {
+    BOOK_GREEN: "🟢",
+    BOOK_RED: "🔴",
+}
+RED_BLOCKED_TERMS = (
+    "фоп",
+    "fop",
+    "физ",
+    "фіз",
+    "iban",
+    "іban",
+    "ибан",
+    "банка",
+    "не отправ",
+    "не відправ",
+)
 BTN_SETTINGS = "Моя цель"
+BTN_BOOK = "Стакан"
 BTN_CHANGE_PRICE = "Изменить цену"
 BTN_PAYMENTS = "Банк"
 BTN_AMOUNT = "Сумма"
@@ -41,18 +63,20 @@ class Config:
     bot_token: str
     default_target_price: Decimal
     default_min_trade_amount: Decimal
+    default_red_target_price: Decimal
+    default_red_min_trade_amount: Decimal
     check_interval_seconds: int
     asset: str
     fiat: str
     trade_type: str
+    red_trade_type: str
     data_file: Path
 
 
 class UserStore:
-    def __init__(self, path: Path, default_target: Decimal, default_min_trade_amount: Decimal) -> None:
+    def __init__(self, path: Path, config: Config) -> None:
         self.path = path
-        self.default_target = default_target
-        self.default_min_trade_amount = default_min_trade_amount
+        self.config = config
         self._lock = asyncio.Lock()
         self._data: dict[str, dict[str, Any]] = {}
 
@@ -73,13 +97,51 @@ class UserStore:
 
     def _default_user(self) -> dict[str, Any]:
         return {
-            "target": str(self.default_target),
-            "min_trade_amount": str(self.default_min_trade_amount),
+            "book": BOOK_GREEN,
+            "target": str(self.config.default_target_price),
+            "min_trade_amount": str(self.config.default_min_trade_amount),
+            "green_target": str(self.config.default_target_price),
+            "green_min_trade_amount": str(self.config.default_min_trade_amount),
+            "red_target": str(self.config.default_red_target_price),
+            "red_min_trade_amount": str(self.config.default_red_min_trade_amount),
             "awaiting_price": False,
             "awaiting_amount": False,
             "payment_methods": [],
             "last_alert_adv_no": None,
         }
+
+    def _normalize_user(self, user: dict[str, Any]) -> dict[str, Any]:
+        defaults = self._default_user()
+        changed = False
+        for key, value in defaults.items():
+            if key not in user:
+                user[key] = value
+                changed = True
+        if user.get("book") not in BOOK_TITLES:
+            user["book"] = BOOK_GREEN
+            changed = True
+        book = str(user["book"])
+        if "green_target" not in user:
+            user["green_target"] = str(user.get("target", self.config.default_target_price))
+            changed = True
+        if "green_min_trade_amount" not in user:
+            user["green_min_trade_amount"] = str(user.get("min_trade_amount", self.config.default_min_trade_amount))
+            changed = True
+        if "red_target" not in user:
+            user["red_target"] = str(self.config.default_red_target_price)
+            changed = True
+        if "red_min_trade_amount" not in user:
+            user["red_min_trade_amount"] = str(self.config.default_red_min_trade_amount)
+            changed = True
+        target_key = f"{book}_target"
+        amount_key = f"{book}_min_trade_amount"
+        if user.get("target") != user.get(target_key):
+            user["target"] = user[target_key]
+            changed = True
+        if user.get("min_trade_amount") != user.get(amount_key):
+            user["min_trade_amount"] = user[amount_key]
+            changed = True
+        return user if changed else user
 
     async def ensure_user(self, user_id: int) -> dict[str, Any]:
         async with self._lock:
@@ -87,18 +149,31 @@ class UserStore:
             if key not in self._data:
                 self._data[key] = self._default_user()
                 await self._save_locked()
+            else:
+                before = dict(self._data[key])
+                self._normalize_user(self._data[key])
+                if self._data[key] != before:
+                    await self._save_locked()
             return dict(self._data[key])
 
     async def update_user(self, user_id: int, **values: Any) -> dict[str, Any]:
         async with self._lock:
             key = str(user_id)
             user = self._data.setdefault(key, self._default_user())
+            self._normalize_user(user)
             user.update(values)
             await self._save_locked()
             return dict(user)
 
     async def all_users(self) -> dict[int, dict[str, Any]]:
         async with self._lock:
+            changed = False
+            for data in self._data.values():
+                before = dict(data)
+                self._normalize_user(data)
+                changed = changed or data != before
+            if changed:
+                await self._save_locked()
             return {int(user_id): dict(data) for user_id, data in self._data.items()}
 
 
@@ -109,54 +184,69 @@ class BinanceP2P:
 
     async def best_offer(
         self,
+        trade_type: str,
         pay_types: list[str] | None = None,
-        trans_amount: Decimal | None = None,
+        min_trade_amount: Decimal | None = None,
+        exclude_red_descriptions: bool = False,
     ) -> dict[str, Any] | None:
         pay_types = pay_types or []
-        payload = {
-            "fiat": self.config.fiat,
-            "page": 1,
-            "rows": 10,
-            "tradeType": self.config.trade_type,
-            "asset": self.config.asset,
-            "payTypes": pay_types,
-            "publisherType": None,
-        }
-        if trans_amount is not None and trans_amount > 0:
-            payload["transAmount"] = str(trans_amount.quantize(Decimal("1")))
         headers = {
             "Content-Type": "application/json",
             "User-Agent": "Mozilla/5.0 Binance price alert bot",
         }
-        async with self.session.post(BINANCE_P2P_URL, json=payload, headers=headers, timeout=20) as response:
-            response.raise_for_status()
-            body = await response.json()
 
-        rows = body.get("data") or []
-        if not rows:
-            return None
+        for page in range(1, 6):
+            payload = {
+                "fiat": self.config.fiat,
+                "page": page,
+                "rows": 20,
+                "tradeType": trade_type,
+                "asset": self.config.asset,
+                "payTypes": pay_types,
+                "publisherType": None,
+            }
+            async with self.session.post(BINANCE_P2P_URL, json=payload, headers=headers, timeout=20) as response:
+                response.raise_for_status()
+                body = await response.json()
 
-        row = rows[0]
-        adv = row["adv"]
-        advertiser = row["advertiser"]
-        return {
-            "adv_no": adv["advNo"],
-            "price": Decimal(str(adv["price"])),
-            "asset": adv.get("asset", self.config.asset),
-            "fiat": adv.get("fiatUnit", self.config.fiat),
-            "min_amount": adv.get("minSingleTransAmount"),
-            "max_amount": adv.get("dynamicMaxSingleTransAmount") or adv.get("maxSingleTransAmount"),
-            "available": adv.get("surplusAmount"),
-            "merchant": advertiser.get("nickName") or "Binance P2P",
-            "orders": advertiser.get("monthOrderCount"),
-            "finish_rate": advertiser.get("monthFinishRate"),
-            "payment_methods": [
-                method.get("identifier") or method.get("payType")
-                for method in adv.get("tradeMethods", [])
-                if method.get("identifier") or method.get("payType")
-            ],
-            "link": binance_web_url(self.config, pay_types, trans_amount),
-        }
+            rows = body.get("data") or []
+            if not rows:
+                return None
+
+            for row in rows:
+                adv = row["adv"]
+                if exclude_red_descriptions and has_blocked_red_description(adv):
+                    continue
+                min_amount = decimal_or_none(adv.get("minSingleTransAmount"))
+                if (
+                    min_trade_amount is not None
+                    and min_trade_amount > 0
+                    and (min_amount is None or min_amount < min_trade_amount)
+                ):
+                    continue
+
+                advertiser = row["advertiser"]
+                return {
+                    "adv_no": adv["advNo"],
+                    "price": Decimal(str(adv["price"])),
+                    "asset": adv.get("asset", self.config.asset),
+                    "fiat": adv.get("fiatUnit", self.config.fiat),
+                    "min_amount": adv.get("minSingleTransAmount"),
+                    "max_amount": adv.get("dynamicMaxSingleTransAmount") or adv.get("maxSingleTransAmount"),
+                    "available": adv.get("surplusAmount"),
+                    "merchant": advertiser.get("nickName") or "Binance P2P",
+                    "orders": advertiser.get("monthOrderCount"),
+                    "finish_rate": advertiser.get("monthFinishRate"),
+                    "payment_methods": [
+                        method.get("identifier") or method.get("payType")
+                        for method in adv.get("tradeMethods", [])
+                        if method.get("identifier") or method.get("payType")
+                    ],
+                    "book": BOOK_RED if trade_type == self.config.red_trade_type else BOOK_GREEN,
+                    "link": binance_web_url(self.config, trade_type, pay_types),
+                }
+
+        return None
 
 
 def load_config() -> Config:
@@ -164,14 +254,20 @@ def load_config() -> Config:
     if not token:
         raise RuntimeError("Set BOT_TOKEN environment variable.")
 
+    trade_type = os.getenv("BINANCE_TRADE_TYPE", "BUY").upper()
+    red_trade_type = os.getenv("BINANCE_RED_TRADE_TYPE", opposite_trade_type(trade_type)).upper()
+
     return Config(
         bot_token=token,
         default_target_price=parse_price(os.getenv("DEFAULT_TARGET_PRICE", "44.9")),
         default_min_trade_amount=parse_amount(os.getenv("DEFAULT_MIN_TRADE_AMOUNT", "2000")),
+        default_red_target_price=parse_price(os.getenv("DEFAULT_RED_TARGET_PRICE", "45.4")),
+        default_red_min_trade_amount=parse_amount(os.getenv("DEFAULT_RED_MIN_TRADE_AMOUNT", "150000")),
         check_interval_seconds=max(15, int(os.getenv("CHECK_INTERVAL_SECONDS", "60"))),
         asset=os.getenv("BINANCE_ASSET", "USDT").upper(),
         fiat=os.getenv("BINANCE_FIAT", "UAH").upper(),
-        trade_type=os.getenv("BINANCE_TRADE_TYPE", "BUY").upper(),
+        trade_type=trade_type,
+        red_trade_type=red_trade_type,
         data_file=Path(os.getenv("DATA_FILE", "data/users.json")),
     )
 
@@ -198,18 +294,96 @@ def parse_amount(value: str) -> Decimal:
     return amount.quantize(Decimal("1"))
 
 
+def opposite_trade_type(trade_type: str) -> str:
+    return "SELL" if trade_type.upper() == "BUY" else "BUY"
+
+
+def decimal_or_none(value: Any) -> Decimal | None:
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except InvalidOperation:
+        return None
+
+
+def red_description_text(adv: dict[str, Any]) -> str:
+    fields = (
+        "remarks",
+        "remark",
+        "description",
+        "advRemark",
+        "tradeRemark",
+        "payTerm",
+    )
+    return " ".join(str(adv.get(field) or "") for field in fields).lower()
+
+
+def has_blocked_red_description(adv: dict[str, Any]) -> bool:
+    description = red_description_text(adv)
+    if any(term in description for term in RED_BLOCKED_TERMS):
+        return True
+    return "карт" in description and "не" in description and (
+        "отправ" in description or "відправ" in description
+    )
+
+
+def user_book(user: dict[str, Any]) -> str:
+    book = str(user.get("book", BOOK_GREEN))
+    return book if book in BOOK_TITLES else BOOK_GREEN
+
+
+def book_title(user_or_book: dict[str, Any] | str) -> str:
+    book = user_book(user_or_book) if isinstance(user_or_book, dict) else user_or_book
+    return BOOK_TITLES.get(book, BOOK_TITLES[BOOK_GREEN])
+
+
+def book_emoji(book: str) -> str:
+    return BOOK_EMOJI.get(book, BOOK_EMOJI[BOOK_GREEN])
+
+
+def user_trade_type(user: dict[str, Any], config: Config) -> str:
+    return config.red_trade_type if user_book(user) == BOOK_RED else config.trade_type
+
+
+def user_price_direction(user: dict[str, Any]) -> str:
+    return "или выше" if user_book(user) == BOOK_RED else "или ниже"
+
+
+def is_target_reached(book: str, price: Decimal, target: Decimal) -> bool:
+    if book == BOOK_RED:
+        return price >= target
+    return price <= target
+
+
+def default_values_for_book(book: str, config: Config) -> tuple[Decimal, Decimal]:
+    if book == BOOK_RED:
+        return config.default_red_target_price, config.default_red_min_trade_amount
+    return config.default_target_price, config.default_min_trade_amount
+
+
+def user_settings_text(user: dict[str, Any]) -> str:
+    return (
+        f"Стакан: <b>{book_title(user)}</b>\n"
+        f"Цель: <b>{user['target']} UAH</b> {user_price_direction(user)}\n"
+        f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>\n"
+        f"Банк: <b>{payment_title(user_payment_methods(user))}</b>"
+    )
+
+
 def user_min_trade_amount(user: dict[str, Any]) -> Decimal:
     return parse_amount(str(user.get("min_trade_amount", "2000")))
 
 
 def binance_web_url(
     config: Config,
+    trade_type: str,
     pay_types: list[str] | None = None,
     trans_amount: Decimal | None = None,
 ) -> str:
     base = (
         f"https://p2p.binance.com/ru/trade/"
-        f"{config.trade_type.lower()}/{config.asset}?fiat={config.fiat}"
+        f"{trade_type.lower()}/{config.asset}?fiat={config.fiat}"
     )
     params = []
     if pay_types:
@@ -238,8 +412,8 @@ def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=BTN_PRICE_NOW, callback_data="price_now"),
                 InlineKeyboardButton(text=BTN_SETTINGS, callback_data="settings"),
+                InlineKeyboardButton(text=BTN_BOOK, callback_data="book"),
             ],
             [
                 InlineKeyboardButton(text=BTN_CHANGE_PRICE, callback_data="change_price"),
@@ -255,7 +429,7 @@ def main_keyboard(user: dict[str, Any]) -> InlineKeyboardMarkup:
 def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_PRICE_NOW), KeyboardButton(text=BTN_SETTINGS)],
+            [KeyboardButton(text=BTN_SETTINGS), KeyboardButton(text=BTN_BOOK)],
             [KeyboardButton(text=BTN_CHANGE_PRICE), KeyboardButton(text=BTN_PAYMENTS)],
             [KeyboardButton(text=BTN_AMOUNT)],
         ],
@@ -265,31 +439,70 @@ def bottom_keyboard(user: dict[str, Any] | None = None) -> ReplyKeyboardMarkup:
     )
 
 
-def presets_keyboard() -> InlineKeyboardMarkup:
+def book_keyboard(selected: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="44.50", callback_data="preset:44.50"),
-                InlineKeyboardButton(text="44.90", callback_data="preset:44.90"),
-                InlineKeyboardButton(text="45.20", callback_data="preset:45.20"),
+                InlineKeyboardButton(
+                    text=("✅ " if selected == BOOK_GREEN else "") + "Зелёный",
+                    callback_data=f"book:set:{BOOK_GREEN}",
+                ),
+                InlineKeyboardButton(
+                    text=("✅ " if selected == BOOK_RED else "") + "Красный",
+                    callback_data=f"book:set:{BOOK_RED}",
+                ),
             ],
+            [InlineKeyboardButton(text="Назад", callback_data="settings")],
+        ]
+    )
+
+
+def presets_keyboard(book: str = BOOK_GREEN) -> InlineKeyboardMarkup:
+    first_row = [
+        InlineKeyboardButton(text="44.50", callback_data="preset:44.50"),
+        InlineKeyboardButton(text="44.90", callback_data="preset:44.90"),
+        InlineKeyboardButton(text="45.20", callback_data="preset:45.20"),
+    ]
+    if book == BOOK_RED:
+        first_row = [
+            InlineKeyboardButton(text="45.40", callback_data="preset:45.40"),
+            InlineKeyboardButton(text="45.60", callback_data="preset:45.60"),
+            InlineKeyboardButton(text="46.00", callback_data="preset:46.00"),
+        ]
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            first_row,
             [InlineKeyboardButton(text="Ввести свою", callback_data="custom_price")],
             [InlineKeyboardButton(text="Назад", callback_data="settings")],
         ]
     )
 
 
-def amount_presets_keyboard() -> InlineKeyboardMarkup:
+def amount_presets_keyboard(book: str = BOOK_GREEN) -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(text="1000 грн", callback_data="amount_preset:1000"),
+            InlineKeyboardButton(text="2000 грн", callback_data="amount_preset:2000"),
+        ],
+        [
+            InlineKeyboardButton(text="5000 грн", callback_data="amount_preset:5000"),
+            InlineKeyboardButton(text="10000 грн", callback_data="amount_preset:10000"),
+        ],
+    ]
+    if book == BOOK_RED:
+        rows = [
+            [
+                InlineKeyboardButton(text="50000 грн", callback_data="amount_preset:50000"),
+                InlineKeyboardButton(text="100000 грн", callback_data="amount_preset:100000"),
+            ],
+            [
+                InlineKeyboardButton(text="150000 грн", callback_data="amount_preset:150000"),
+                InlineKeyboardButton(text="250000 грн", callback_data="amount_preset:250000"),
+            ],
+        ]
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text="1000 грн", callback_data="amount_preset:1000"),
-                InlineKeyboardButton(text="2000 грн", callback_data="amount_preset:2000"),
-            ],
-            [
-                InlineKeyboardButton(text="5000 грн", callback_data="amount_preset:5000"),
-                InlineKeyboardButton(text="10000 грн", callback_data="amount_preset:10000"),
-            ],
+            *rows,
             [InlineKeyboardButton(text="Ввести свою", callback_data="custom_amount")],
             [InlineKeyboardButton(text="Назад", callback_data="settings")],
         ]
@@ -336,10 +549,12 @@ def offer_text(
         if method
     ]
     methods_line = ", ".join(methods) if methods else "-"
+    book = offer.get("book", BOOK_GREEN)
 
     return (
-        f"🟢 <b>{offer['asset']}/{offer['fiat']}: {offer['price']} {offer['fiat']}</b>"
+        f"{book_emoji(book)} <b>{offer['asset']}/{offer['fiat']}: {offer['price']} {offer['fiat']}</b>"
         f"{filter_block}\n"
+        f"Стакан: <b>{book_title(book)}</b>\n"
         f"Продавец: <b>{html.escape(str(offer['merchant']))}</b>\n"
         f"Лимиты: {offer.get('min_amount') or '-'} - {offer.get('max_amount') or '-'} {offer['fiat']}\n"
         f"Доступно: {offer.get('available') or '-'} {offer['asset']}\n"
@@ -351,29 +566,8 @@ def offer_text(
 
 
 def alert_text(offer: dict[str, Any], target: Decimal, trans_amount: Decimal) -> str:
-    return "🔥 <b>Цена дошла до цели</b>\n\n" + offer_text(offer, target, trans_amount)
-
-
-async def send_price(
-    bot: Bot,
-    chat_id: int,
-    p2p: BinanceP2P,
-    target: Decimal | None = None,
-    pay_types: list[str] | None = None,
-    trans_amount: Decimal | None = None,
-) -> None:
-    offer = await p2p.best_offer(pay_types, trans_amount)
-    if offer is None:
-        await bot.send_message(chat_id, "Сейчас Binance не вернул объявления под этот фильтр. Попробуй другой банк или чуть позже.")
-        return
-    await bot.send_message(
-        chat_id,
-        offer_text(offer, target, trans_amount),
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Открыть Binance", url=offer["link"])]]
-        ),
-        disable_web_page_preview=True,
-    )
+    direction = "или выше" if offer.get("book") == BOOK_RED else "или ниже"
+    return f"🔥 <b>Цена дошла до цели {direction}</b>\n\n" + offer_text(offer, target, trans_amount)
 
 
 async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: int) -> None:
@@ -382,17 +576,24 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
             users = await store.all_users()
             offers_by_filter: dict[tuple[str, ...], dict[str, Any] | None] = {}
             for chat_id, user in users.items():
+                book = user_book(user)
                 pay_types = user_payment_methods(user)
                 trans_amount = user_min_trade_amount(user)
-                filter_key = (*pay_types, f"amount:{trans_amount}")
+                trade_type = user_trade_type(user, p2p.config)
+                filter_key = (book, trade_type, *pay_types, f"amount:{trans_amount}")
                 if filter_key not in offers_by_filter:
-                    offers_by_filter[filter_key] = await p2p.best_offer(pay_types, trans_amount)
+                    offers_by_filter[filter_key] = await p2p.best_offer(
+                        trade_type,
+                        pay_types,
+                        trans_amount,
+                        exclude_red_descriptions=book == BOOK_RED,
+                    )
                 offer = offers_by_filter[filter_key]
                 if offer is not None:
                     target = parse_price(str(user.get("target", p2p.config.default_target_price)))
                     adv_no = offer["adv_no"]
                     price = offer["price"]
-                    if price <= target and user.get("last_alert_adv_no") != adv_no:
+                    if is_target_reached(book, price, target) and user.get("last_alert_adv_no") != adv_no:
                         await bot.send_message(
                             chat_id,
                             alert_text(offer, target, trans_amount),
@@ -402,7 +603,7 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
                             disable_web_page_preview=True,
                         )
                         await store.update_user(chat_id, last_alert_adv_no=adv_no)
-                    elif price > target and user.get("last_alert_adv_no") is not None:
+                    elif not is_target_reached(book, price, target) and user.get("last_alert_adv_no") is not None:
                         await store.update_user(chat_id, last_alert_adv_no=None)
         except Exception:
             logging.exception("Price watcher failed")
@@ -413,7 +614,7 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
 async def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config = load_config()
-    store = UserStore(config.data_file, config.default_target_price, config.default_min_trade_amount)
+    store = UserStore(config.data_file, config)
     await store.load()
 
     bot = Bot(config.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -427,11 +628,12 @@ async def main() -> None:
         async def start(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
             await message.answer(
-                "Я слежу за зелёным стаканом Binance P2P USDT/UAH.\n"
-                f"По умолчанию цель: <b>{user['target']} UAH</b>. "
+                f"Я слежу за Binance P2P USDT/UAH: зелёный или красный стакан на выбор.\n"
+                f"Сейчас: <b>{book_title(user)}</b>. "
+                f"Цель: <b>{user['target']} UAH</b> {user_price_direction(user)}. "
                 f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>. "
                 f"Банк: <b>{payment_title(user_payment_methods(user))}</b>.\n"
-                "Как только цена будет такой или ниже, пришлю объявление.",
+                "Как только цена дойдёт до цели, пришлю объявление.",
                 reply_markup=bottom_keyboard(user),
             )
 
@@ -439,9 +641,7 @@ async def main() -> None:
         async def settings_command(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
             await message.answer(
-                f"Цель: <b>{user['target']} UAH</b>\n"
-                f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>\n"
-                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>",
+                user_settings_text(user),
                 reply_markup=bottom_keyboard(user),
             )
 
@@ -449,17 +649,13 @@ async def main() -> None:
         async def settings_button(message: Message) -> None:
             await settings_command(message)
 
-        @router.message(F.text == BTN_PRICE_NOW)
-        async def price_now_button(message: Message) -> None:
+        @router.message(F.text == BTN_BOOK)
+        async def book_button(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
-            await message.answer("Проверяю Binance...", reply_markup=bottom_keyboard(user))
-            await send_price(
-                bot,
-                message.chat.id,
-                p2p,
-                parse_price(str(user["target"])),
-                user_payment_methods(user),
-                user_min_trade_amount(user),
+            await message.answer(
+                f"Сейчас выбран: <b>{book_title(user)}</b>.\n\n"
+                "Красный стакан дополнительно скрывает объявления с ФОП/физ/IBAN и похожими условиями в описании.",
+                reply_markup=book_keyboard(user_book(user)),
             )
 
         @router.message(F.text == BTN_CHANGE_PRICE)
@@ -469,7 +665,7 @@ async def main() -> None:
                 "Выбери новую цель или введи свою цену:",
                 reply_markup=bottom_keyboard(user),
             )
-            await message.answer("Пресеты цены:", reply_markup=presets_keyboard())
+            await message.answer("Пресеты цены:", reply_markup=presets_keyboard(user_book(user)))
 
         @router.message(F.text == BTN_PAYMENTS)
         async def payments_button(message: Message) -> None:
@@ -487,32 +683,60 @@ async def main() -> None:
             await message.answer(
                 f"Минимальная сумма сделки: <b>от {user_min_trade_amount(user)} UAH</b>\n\n"
                 "Выбери пресет или введи свою сумму.",
-                reply_markup=amount_presets_keyboard(),
+                reply_markup=amount_presets_keyboard(user_book(user)),
             )
 
         @router.callback_query(F.data == "settings")
         async def settings(callback: CallbackQuery) -> None:
             user = await store.ensure_user(callback.message.chat.id)
             await callback.message.edit_text(
-                f"Цель: <b>{user['target']} UAH</b>\n"
-                f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>\n"
-                f"Банк: <b>{payment_title(user_payment_methods(user))}</b>",
+                user_settings_text(user),
                 reply_markup=main_keyboard(user),
             )
             await callback.answer()
 
-        @router.callback_query(F.data == "price_now")
-        async def price_now(callback: CallbackQuery) -> None:
+        @router.callback_query(F.data == "book")
+        async def book(callback: CallbackQuery) -> None:
             user = await store.ensure_user(callback.message.chat.id)
-            await callback.answer("Проверяю Binance...")
-            await send_price(
-                bot,
-                callback.message.chat.id,
-                p2p,
-                parse_price(str(user["target"])),
-                user_payment_methods(user),
-                user_min_trade_amount(user),
+            await callback.message.edit_text(
+                f"Сейчас выбран: <b>{book_title(user)}</b>.\n\n"
+                "Красный стакан дополнительно скрывает объявления с ФОП/физ/IBAN и похожими условиями в описании.",
+                reply_markup=book_keyboard(user_book(user)),
             )
+            await callback.answer()
+
+        @router.callback_query(F.data.startswith("book:set:"))
+        async def book_set(callback: CallbackQuery) -> None:
+            book = callback.data.split(":", 2)[2]
+            if book not in BOOK_TITLES:
+                await callback.answer("Неизвестный стакан", show_alert=True)
+                return
+
+            current_user = await store.ensure_user(callback.message.chat.id)
+            current_book = user_book(current_user)
+            target, min_trade_amount = default_values_for_book(book, config)
+            target = parse_price(str(current_user.get(f"{book}_target", target)))
+            min_trade_amount = parse_amount(str(current_user.get(f"{book}_min_trade_amount", min_trade_amount)))
+            user = await store.update_user(
+                callback.message.chat.id,
+                **{
+                    f"{current_book}_target": str(current_user["target"]),
+                    f"{current_book}_min_trade_amount": str(user_min_trade_amount(current_user)),
+                    f"{book}_target": str(target),
+                    f"{book}_min_trade_amount": str(min_trade_amount),
+                },
+                book=book,
+                target=str(target),
+                min_trade_amount=str(min_trade_amount),
+                awaiting_amount=False,
+                awaiting_price=False,
+                last_alert_adv_no=None,
+            )
+            await callback.message.edit_text(
+                f"Готово. Теперь выбран <b>{book_title(user)}</b>.\n\n{user_settings_text(user)}",
+                reply_markup=main_keyboard(user),
+            )
+            await callback.answer("Сохранено")
 
         @router.callback_query(F.data == "payments")
         async def payments(callback: CallbackQuery) -> None:
@@ -531,16 +755,19 @@ async def main() -> None:
             await callback.message.edit_text(
                 f"Минимальная сумма сделки: <b>от {user_min_trade_amount(user)} UAH</b>\n\n"
                 "Выбери пресет или введи свою сумму.",
-                reply_markup=amount_presets_keyboard(),
+                reply_markup=amount_presets_keyboard(user_book(user)),
             )
             await callback.answer()
 
         @router.callback_query(F.data.startswith("amount_preset:"))
         async def amount_preset(callback: CallbackQuery) -> None:
             value = callback.data.split(":", 1)[1]
+            current_user = await store.ensure_user(callback.message.chat.id)
+            amount = parse_amount(value)
             user = await store.update_user(
                 callback.message.chat.id,
-                min_trade_amount=str(parse_amount(value)),
+                **{f"{user_book(current_user)}_min_trade_amount": str(amount)},
+                min_trade_amount=str(amount),
                 awaiting_amount=False,
                 awaiting_price=False,
                 last_alert_adv_no=None,
@@ -553,12 +780,14 @@ async def main() -> None:
 
         @router.callback_query(F.data == "custom_amount")
         async def custom_amount(callback: CallbackQuery) -> None:
+            user = await store.ensure_user(callback.message.chat.id)
+            example = "150000" if user_book(user) == BOOK_RED else "2000"
             await store.update_user(
                 callback.message.chat.id,
                 awaiting_amount=True,
                 awaiting_price=False,
             )
-            await callback.message.edit_text("Напиши сумму в гривне, например <b>2000</b>.")
+            await callback.message.edit_text(f"Напиши сумму в гривне, например <b>{example}</b>.")
             await callback.answer()
 
         @router.callback_query(F.data == "pay:all")
@@ -604,21 +833,28 @@ async def main() -> None:
 
         @router.callback_query(F.data == "change_price")
         async def change_price(callback: CallbackQuery) -> None:
-            await callback.message.edit_text("Выбери новую цель или введи свою цену:", reply_markup=presets_keyboard())
+            user = await store.ensure_user(callback.message.chat.id)
+            await callback.message.edit_text(
+                "Выбери новую цель или введи свою цену:",
+                reply_markup=presets_keyboard(user_book(user)),
+            )
             await callback.answer()
 
         @router.callback_query(F.data.startswith("preset:"))
         async def preset(callback: CallbackQuery) -> None:
             value = callback.data.split(":", 1)[1]
+            current_user = await store.ensure_user(callback.message.chat.id)
+            target = parse_price(value)
             user = await store.update_user(
                 callback.message.chat.id,
-                target=str(parse_price(value)),
+                **{f"{user_book(current_user)}_target": str(target)},
+                target=str(target),
                 awaiting_price=False,
                 awaiting_amount=False,
                 last_alert_adv_no=None,
             )
             await callback.message.edit_text(
-                f"Готово. Новая цель: <b>{user['target']} UAH</b>",
+                f"Готово. Новая цель: <b>{user['target']} UAH</b> {user_price_direction(user)}.",
                 reply_markup=main_keyboard(user),
             )
             await callback.answer("Сохранено")
@@ -645,6 +881,7 @@ async def main() -> None:
 
                 updated = await store.update_user(
                     message.chat.id,
+                    **{f"{user_book(user)}_min_trade_amount": str(amount)},
                     min_trade_amount=str(amount),
                     awaiting_amount=False,
                     awaiting_price=False,
@@ -668,13 +905,14 @@ async def main() -> None:
 
             updated = await store.update_user(
                 message.chat.id,
+                **{f"{user_book(user)}_target": str(target)},
                 target=str(target),
                 awaiting_price=False,
                 awaiting_amount=False,
                 last_alert_adv_no=None,
             )
             await message.answer(
-                f"Красиво. Теперь жду <b>{updated['target']} UAH</b> или ниже.",
+                f"Красиво. Теперь жду <b>{updated['target']} UAH</b> {user_price_direction(updated)}.",
                 reply_markup=bottom_keyboard(updated),
             )
 
