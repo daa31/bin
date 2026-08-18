@@ -192,6 +192,7 @@ class BinanceP2P:
         pay_types: list[str] | None = None,
         min_trade_amount: Decimal | None = None,
         exclude_red_descriptions: bool = False,
+        amount_must_fit_limits: bool = False,
     ) -> dict[str, Any] | None:
         pay_types = pay_types or []
         headers = {
@@ -227,12 +228,17 @@ class BinanceP2P:
                     if has_blocked_red_description(adv_text):
                         continue
                 min_amount = decimal_or_none(adv.get("minSingleTransAmount"))
-                if (
-                    min_trade_amount is not None
-                    and min_trade_amount > 0
-                    and (min_amount is None or min_amount < min_trade_amount)
-                ):
-                    continue
+                max_amount = decimal_or_none(adv.get("dynamicMaxSingleTransAmount") or adv.get("maxSingleTransAmount"))
+                if min_trade_amount is not None and min_trade_amount > 0:
+                    if amount_must_fit_limits:
+                        if (
+                            min_amount is None
+                            or max_amount is None
+                            or not (min_amount <= min_trade_amount <= max_amount)
+                        ):
+                            continue
+                    elif min_amount is None or min_amount < min_trade_amount:
+                        continue
 
                 advertiser = row["advertiser"]
                 return {
@@ -414,10 +420,12 @@ def default_values_for_book(book: str, config: Config) -> tuple[Decimal, Decimal
 
 
 def user_settings_text(user: dict[str, Any]) -> str:
+    amount_label = "Сумма сделки" if user_book(user) == BOOK_RED else "Сумма"
+    amount_prefix = "" if user_book(user) == BOOK_RED else "от "
     return (
         f"Стакан: <b>{book_title(user)}</b>\n"
         f"Цель: <b>{user['target']} UAH</b> {user_price_direction(user)}\n"
-        f"Сумма: <b>от {user_min_trade_amount(user)} UAH</b>\n"
+        f"{amount_label}: <b>{amount_prefix}{user_min_trade_amount(user)} UAH</b>\n"
         f"Банк: <b>{payment_title(user_payment_methods(user))}</b>"
     )
 
@@ -594,7 +602,10 @@ def offer_text(
     if target is not None:
         filter_lines.append(f"Твоя цель: <b>{target} {offer['fiat']}</b>")
     if trans_amount is not None:
-        filter_lines.append(f"Сумма поиска: <b>от {trans_amount} {offer['fiat']}</b>")
+        if offer.get("book") == BOOK_RED:
+            filter_lines.append(f"Сумма сделки: <b>{trans_amount} {offer['fiat']}</b>")
+        else:
+            filter_lines.append(f"Сумма поиска: <b>от {trans_amount} {offer['fiat']}</b>")
     filter_text = "\n".join(filter_lines)
     filter_block = f"\n{filter_text}\n" if filter_text else "\n"
     orders = offer.get("orders") or "-"
@@ -657,12 +668,14 @@ async def send_current_price(
         pay_types,
         min_trade_amount,
         exclude_red_descriptions=book == BOOK_RED,
+        amount_must_fit_limits=book == BOOK_RED,
     )
     if offer is None:
         await bot.send_message(
             chat_id,
             f"Сейчас Binance не вернул объявления под фильтр: {book_title(book)}, "
-            f"сумма от {min_trade_amount} {p2p.config.fiat}, банк {payment_title(pay_types)}.",
+            f"{'сумма сделки' if book == BOOK_RED else 'сумма от'} {min_trade_amount} "
+            f"{p2p.config.fiat}, банк {payment_title(pay_types)}.",
         )
         return
 
@@ -693,6 +706,7 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
                         pay_types,
                         trans_amount,
                         exclude_red_descriptions=book == BOOK_RED,
+                        amount_must_fit_limits=book == BOOK_RED,
                     )
                 offer = offers_by_filter[filter_key]
                 if offer is not None:
@@ -798,8 +812,10 @@ async def main() -> None:
         @router.message(F.text == BTN_AMOUNT)
         async def amount_button(message: Message) -> None:
             user = await store.ensure_user(message.chat.id)
+            amount_label = "Сумма сделки для красного стакана" if user_book(user) == BOOK_RED else "Минимальная сумма сделки"
+            amount_prefix = "" if user_book(user) == BOOK_RED else "от "
             await message.answer(
-                f"Минимальная сумма сделки: <b>от {user_min_trade_amount(user)} UAH</b>\n\n"
+                f"{amount_label}: <b>{amount_prefix}{user_min_trade_amount(user)} UAH</b>\n\n"
                 "Выбери пресет или введи свою сумму.",
                 reply_markup=amount_presets_keyboard(user_book(user)),
             )
@@ -881,8 +897,10 @@ async def main() -> None:
         @router.callback_query(F.data == "amount")
         async def amount(callback: CallbackQuery) -> None:
             user = await store.ensure_user(callback.message.chat.id)
+            amount_label = "Сумма сделки для красного стакана" if user_book(user) == BOOK_RED else "Минимальная сумма сделки"
+            amount_prefix = "" if user_book(user) == BOOK_RED else "от "
             await callback.message.edit_text(
-                f"Минимальная сумма сделки: <b>от {user_min_trade_amount(user)} UAH</b>\n\n"
+                f"{amount_label}: <b>{amount_prefix}{user_min_trade_amount(user)} UAH</b>\n\n"
                 "Выбери пресет или введи свою сумму.",
                 reply_markup=amount_presets_keyboard(user_book(user)),
             )
@@ -902,7 +920,7 @@ async def main() -> None:
                 last_alert_adv_no=None,
             )
             await callback.message.edit_text(
-                f"Готово. Теперь ищу объявления <b>от {user_min_trade_amount(user)} UAH</b>.",
+                f"Готово. Теперь сумма: <b>{'' if user_book(user) == BOOK_RED else 'от '}{user_min_trade_amount(user)} UAH</b>.",
                 reply_markup=main_keyboard(user),
             )
             await callback.answer("Сохранено")
@@ -1017,7 +1035,7 @@ async def main() -> None:
                     last_alert_adv_no=None,
                 )
                 await message.answer(
-                    f"Готово. Теперь фильтр суммы: <b>от {user_min_trade_amount(updated)} UAH</b>.",
+                    f"Готово. Теперь фильтр суммы: <b>{'' if user_book(updated) == BOOK_RED else 'от '}{user_min_trade_amount(updated)} UAH</b>.",
                     reply_markup=bottom_keyboard(updated),
                 )
                 return
