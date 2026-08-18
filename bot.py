@@ -186,6 +186,7 @@ class UserStore:
             "green_min_trade_amount": str(self.config.default_min_trade_amount),
             "red_target": str(self.config.default_red_target_price),
             "red_min_trade_amount": str(self.config.default_red_min_trade_amount),
+            "monitoring_enabled": True,
             "awaiting_price": False,
             "awaiting_amount": False,
             "payment_methods": [],
@@ -538,8 +539,10 @@ def default_values_for_book(book: str, config: Config) -> tuple[Decimal, Decimal
 def user_settings_text(user: dict[str, Any]) -> str:
     amount_label = "Сумма сделки" if user_book(user) == BOOK_RED else "Сумма"
     amount_prefix = "" if user_book(user) == BOOK_RED else "от "
+    monitoring_status = "включён" if user.get("monitoring_enabled", True) else "остановлен"
     return (
         f"Стакан: <b>{book_title(user)}</b>\n"
+        f"Анализ: <b>{monitoring_status}</b>\n"
         f"Цель: <b>{user['target']} UAH</b> {user_price_direction(user)}\n"
         f"{amount_label}: <b>{amount_prefix}{user_min_trade_amount(user)} UAH</b>\n"
         f"Банк: <b>{payment_title(user_payment_methods(user))}</b>"
@@ -822,6 +825,8 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
             users = await store.all_users()
             offers_by_filter: dict[tuple[str, ...], dict[str, Any] | None] = {}
             for chat_id, user in users.items():
+                if not user.get("monitoring_enabled", True):
+                    continue
                 book = user_book(user)
                 pay_types = user_payment_methods(user)
                 trans_amount = user_min_trade_amount(user)
@@ -895,6 +900,35 @@ async def main() -> None:
         @router.message(F.text == BTN_SETTINGS)
         async def settings_button(message: Message) -> None:
             await settings_command(message)
+
+        @router.message(lambda message: bool(message.text) and message.text.casefold() == ".stop")
+        async def stop_monitoring(message: Message) -> None:
+            user = await store.update_user(
+                message.chat.id,
+                monitoring_enabled=False,
+                awaiting_amount=False,
+                awaiting_price=False,
+                last_alert_adv_no=None,
+            )
+            await message.answer(
+                "Постоянный анализ остановлен.\n\n"
+                "Настройки зелёного и красного стакана сохранены. Чтобы продолжить, напиши <b>.start</b>.",
+                reply_markup=bottom_keyboard(user),
+            )
+
+        @router.message(lambda message: bool(message.text) and message.text.casefold() == ".start")
+        async def start_monitoring(message: Message) -> None:
+            user = await store.update_user(
+                message.chat.id,
+                monitoring_enabled=True,
+                awaiting_amount=False,
+                awaiting_price=False,
+                last_alert_adv_no=None,
+            )
+            await message.answer(
+                "Постоянный анализ снова включён.\n\n" + user_settings_text(user),
+                reply_markup=bottom_keyboard(user),
+            )
 
         @router.message(F.text == BTN_BACK)
         async def back_button(message: Message) -> None:
