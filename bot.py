@@ -243,6 +243,7 @@ class BinanceP2P:
                         if method.get("identifier") or method.get("payType")
                     ],
                     "book": BOOK_RED if trade_type == self.config.red_trade_type else BOOK_GREEN,
+                    "description": clean_description_text(adv),
                     "link": binance_web_url(self.config, trade_type, pay_types),
                 }
 
@@ -317,6 +318,19 @@ def red_description_text(adv: dict[str, Any]) -> str:
         "payTerm",
     )
     return " ".join(str(adv.get(field) or "") for field in fields).lower()
+
+
+def clean_description_text(adv: dict[str, Any]) -> str:
+    fields = (
+        "remarks",
+        "remark",
+        "description",
+        "advRemark",
+        "tradeRemark",
+        "payTerm",
+    )
+    parts = [str(adv.get(field) or "").strip() for field in fields]
+    return "\n".join(part for part in parts if part)
 
 
 def has_blocked_red_description(adv: dict[str, Any]) -> bool:
@@ -550,6 +564,10 @@ def offer_text(
     ]
     methods_line = ", ".join(methods) if methods else "-"
     book = offer.get("book", BOOK_GREEN)
+    description_block = ""
+    if book == BOOK_RED:
+        description = str(offer.get("description") or "").strip() or "-"
+        description_block = f"Описание: {html.escape(description)}\n"
 
     return (
         f"{book_emoji(book)} <b>{offer['asset']}/{offer['fiat']}: {offer['price']} {offer['fiat']}</b>"
@@ -559,6 +577,7 @@ def offer_text(
         f"Лимиты: {offer.get('min_amount') or '-'} - {offer.get('max_amount') or '-'} {offer['fiat']}\n"
         f"Доступно: {offer.get('available') or '-'} {offer['asset']}\n"
         f"Оплата: {html.escape(methods_line)}\n"
+        f"{description_block}"
         f"Сделок за месяц: {orders}, завершение: {finish_rate}\n\n"
         f"<a href=\"{offer['link']}\">Открыть объявление на Binance P2P</a>\n"
         f"ID объявления: <code>{offer['adv_no']}</code>"
