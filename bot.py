@@ -57,6 +57,16 @@ RED_BLOCKED_TERMS = (
     "iban",
     "іban",
     "ибан",
+    "айбан",
+    "іпн",
+    "ипн",
+    "інн",
+    "инн",
+    "фио",
+    "фіо",
+    "реквизит",
+    "реквізит",
+    "рекв",
     "банка",
     "банки",
     "конверт",
@@ -774,8 +784,7 @@ def offer_text(
         f"<b>Оплата:</b> {html.escape(methods_line)}\n\n"
         f"{description_block}"
         f"<b>Сделок за месяц:</b> {orders}, <b>завершение:</b> {finish_rate}\n\n"
-        f"<a href=\"{offer['link']}\">Открыть объявление на Binance P2P</a>\n"
-        f"<b>ID объявления:</b> <code>{offer['adv_no']}</code>"
+        f"<b>ID объявления / код для Binance App:</b> <code>{offer['adv_no']}</code>"
     )
 
 
