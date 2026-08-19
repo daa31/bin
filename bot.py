@@ -342,7 +342,7 @@ class BinanceP2P:
                     ],
                     "book": BOOK_RED if trade_type == self.config.red_trade_type else BOOK_GREEN,
                     "description": clean_description_text(adv_text),
-                    "link": binance_web_url(self.config, trade_type, pay_types),
+                    "link": binance_adv_url(str(adv["advNo"])),
                 }
 
         return None
@@ -590,24 +590,8 @@ def user_min_trade_amount(user: dict[str, Any]) -> Decimal:
     return parse_amount(str(user.get("min_trade_amount", "2000")))
 
 
-def binance_web_url(
-    config: Config,
-    trade_type: str,
-    pay_types: list[str] | None = None,
-    trans_amount: Decimal | None = None,
-) -> str:
-    base = (
-        f"https://p2p.binance.com/ru/trade/"
-        f"{trade_type.lower()}/{config.asset}?fiat={config.fiat}"
-    )
-    params = []
-    if pay_types:
-        params.append(f"payment={','.join(pay_types)}")
-    if trans_amount is not None and trans_amount > 0:
-        params.append(f"amount={trans_amount.quantize(Decimal('1'))}")
-    if not params:
-        return base
-    return f"{base}&{'&'.join(params)}"
+def binance_adv_url(adv_no: str) -> str:
+    return f"https://c2c.binance.com/en/adv?code={adv_no}"
 
 
 def user_payment_methods(user: dict[str, Any]) -> list[str]:
