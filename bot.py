@@ -827,7 +827,7 @@ async def send_current_price(
         chat_id,
         offer_text(offer, target, min_trade_amount),
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="🔗 Открыть Binance", url=offer["link"])]]
+            inline_keyboard=[[InlineKeyboardButton(text="🔗 Открыть в Binance App", url=offer["link"])]]
         ),
         disable_web_page_preview=True,
     )
@@ -864,7 +864,7 @@ async def watch_prices(bot: Bot, store: UserStore, p2p: BinanceP2P, interval: in
                             chat_id,
                             alert_text(offer, target, trans_amount),
                             reply_markup=InlineKeyboardMarkup(
-                                inline_keyboard=[[InlineKeyboardButton(text="🔗 Открыть Binance", url=offer["link"])]]
+                                inline_keyboard=[[InlineKeyboardButton(text="🔗 Открыть в Binance App", url=offer["link"])]]
                             ),
                             disable_web_page_preview=True,
                         )
